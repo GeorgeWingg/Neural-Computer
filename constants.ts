@@ -3,19 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 /* tslint:disable */
-import {AppDefinition, StyleConfig} from './types';
+import { AppDefinition, StyleConfig } from './types';
 
 export const APP_DEFINITIONS_CONFIG: AppDefinition[] = [
-  {id: 'my_computer', name: 'Desktop', icon: '💻', color: '#e3f2fd'},
-  {id: 'documents', name: 'Documents', icon: '📁', color: '#f1f8e9'},
-  {id: 'notepad_app', name: 'Notepad', icon: '📝', color: '#fffde7'},
-  {id: 'settings_app', name: 'Settings', icon: '⚙️', color: '#e7f3ff'},
-  {id: 'trash_bin', name: 'Trash Bin', icon: '🗑️', color: '#ffebee'},
-  {id: 'web_browser_app', name: 'Web', icon: '🌐', color: '#e0f7fa'},
-  {id: 'calculator_app', name: 'Calculator', icon: '🧮', color: '#f5f5f5'},
-  {id: 'travel_app', name: 'Travel', icon: '✈️', color: '#e8f5e9'},
-  {id: 'shopping_app', name: 'Shopping', icon: '🛒', color: '#fff3e0'},
-  {id: 'gaming_app', name: 'Games', icon: '🎮', color: '#f3e5f5'},
+  { id: 'my_computer', name: 'Desktop', icon: '💻', color: '#e3f2fd' },
+  { id: 'documents', name: 'Documents', icon: '📁', color: '#f1f8e9' },
+  { id: 'notepad_app', name: 'Notepad', icon: '📝', color: '#fffde7' },
+  { id: 'settings_app', name: 'Settings', icon: '⚙️', color: '#e7f3ff' },
+  { id: 'trash_bin', name: 'Trash Bin', icon: '🗑️', color: '#ffebee' },
+  { id: 'web_browser_app', name: 'Web', icon: '🌐', color: '#e0f7fa' },
+  { id: 'calculator_app', name: 'Calculator', icon: '🧮', color: '#f5f5f5' },
+  { id: 'travel_app', name: 'Travel', icon: '✈️', color: '#e8f5e9' },
+  { id: 'shopping_app', name: 'Shopping', icon: '🛒', color: '#fff3e0' },
+  { id: 'gaming_app', name: 'Games', icon: '🎮', color: '#f3e5f5' },
 ];
 
 export const SETTINGS_APP_DEFINITION: AppDefinition = {
@@ -70,12 +70,22 @@ Apps like Calculator, Notepad, and Games MUST include \`<script>\` tags with com
 **Google Maps:** Use \`<iframe src="https://www.google.com/maps?q=ENCODED_QUERY&output=embed" width="100%" height="400" style="border:0;"></iframe>\`
 **Google Search:** Use \`<iframe src="https://www.google.com/search?q=ENCODED_QUERY&igu=1&source=hp&ei=&iflsig=&output=embed" width="100%" height="400" style="border:0;"></iframe>\``;
 
+export const MANDATORY_OUTPUT_RULES = `
+**CRITICAL TECHNICAL REQUIREMENTS:**
+- Return ONLY raw HTML content. No markdown fences, no \`<html>\` or \`<body>\` wrappers.
+- You CAN and SHOULD use \`<style>\` tags for app-specific CSS.
+- You CAN and SHOULD use \`<script>\` tags for interactive apps.
+- Do NOT generate a main heading/title — the window frame provides that.
+- Use \`data-interaction-id\` on elements that should trigger navigation/actions.
+`;
+
 export const getSystemPrompt = (styleConfig: StyleConfig, appContext?: string | null): string => {
   if (styleConfig.customSystemPrompt && appContext !== 'system_settings_page') {
-    return styleConfig.customSystemPrompt;
+    // Append mandatory rules to custom prompt to ensure app still functions
+    return `${styleConfig.customSystemPrompt}\n\n${MANDATORY_OUTPUT_RULES}`;
   }
 
-  const {detailLevel, colorTheme, maxHistoryLength} = styleConfig;
+  const { detailLevel, colorTheme, maxHistoryLength } = styleConfig;
 
   let directives = '';
 
