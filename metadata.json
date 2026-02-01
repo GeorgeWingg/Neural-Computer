@@ -1,0 +1,6 @@
+{
+  "name": "Gemini OS",
+  "description": "Simulate a computer with a UI that is generated dynamically from user interactions.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
