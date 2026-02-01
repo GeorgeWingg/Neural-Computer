@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 /* tslint:disable */
-import React, {useEffect, useMemo, useRef, useState} from 'react';
-import {ColorTheme, InteractionData} from '../types';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ColorTheme, InteractionData } from '../types';
 
 interface LoadingTheme {
   bg: string;
@@ -318,7 +318,7 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   // Auto-scroll during streaming
   useEffect(() => {
     if (scrollAnchorRef.current && isLoading && htmlContent) {
-      scrollAnchorRef.current.scrollIntoView({behavior: 'smooth'});
+      scrollAnchorRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [htmlContent, isLoading]);
 
@@ -344,6 +344,8 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   // Build iframe srcDoc — bridge script injected BEFORE content in <head>
   const iframeDoc = useMemo(() => {
     if (!htmlContent || isLoading) return '';
+    // Strip thought markers from content before rendering
+    const cleanedContent = htmlContent.replace(/<!--THOUGHT-->[\s\S]*?<!--\/THOUGHT-->/g, '');
     return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
@@ -354,19 +356,32 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
 <script>${BRIDGE_SCRIPT}<\/script>
 </head>
 <body>
-${htmlContent}
+${cleanedContent}
 </body></html>`;
   }, [htmlContent, isLoading]);
 
-  // Split content into reasoning and code
-  const firstTagIndex = htmlContent.search(/<[a-zA-Z]/);
-  const reasoning =
-    firstTagIndex > 0
-      ? htmlContent.substring(0, firstTagIndex).trim()
+  // Extract thought content from markers (from Gemini's thinking process)
+  const thoughtRegex = /<!--THOUGHT-->([\s\S]*?)<!--\/THOUGHT-->/g;
+  let reasoning = '';
+  let match;
+  while ((match = thoughtRegex.exec(htmlContent)) !== null) {
+    reasoning += match[1];
+  }
+
+  // Remove thought markers from content to get the actual code
+  const contentWithoutThoughts = htmlContent.replace(thoughtRegex, '');
+  const firstTagIndex = contentWithoutThoughts.search(/<[a-zA-Z]/);
+
+  // If no explicit thoughts, fall back to pre-HTML text as reasoning
+  if (!reasoning) {
+    reasoning = firstTagIndex > 0
+      ? contentWithoutThoughts.substring(0, firstTagIndex).trim()
       : firstTagIndex === -1
-        ? htmlContent.trim()
+        ? contentWithoutThoughts.trim()
         : '';
-  const code = firstTagIndex >= 0 ? htmlContent.substring(firstTagIndex) : '';
+  }
+
+  const code = firstTagIndex >= 0 ? contentWithoutThoughts.substring(firstTagIndex) : '';
 
   // Status text
   const getStatusText = (): string => {
@@ -393,7 +408,7 @@ ${htmlContent}
         <style>{CSS_KEYFRAMES}</style>
         <iframe
           srcDoc={iframeDoc}
-          style={{width: '100%', height: '100%', border: 'none'}}
+          style={{ width: '100%', height: '100%', border: 'none' }}
           sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
           title={appName || 'App Content'}
         />
@@ -417,7 +432,7 @@ ${htmlContent}
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        ...(isGradientBg ? {background: theme.bg} : {background: theme.bg}),
+        ...(isGradientBg ? { background: theme.bg } : { background: theme.bg }),
         color: theme.text,
         fontFamily:
           "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace",
@@ -426,7 +441,7 @@ ${htmlContent}
       <style>{CSS_KEYFRAMES}</style>
 
       {/* Progress bar */}
-      <div style={{height: '3px', background: theme.progressBg, flexShrink: 0}}>
+      <div style={{ height: '3px', background: theme.progressBg, flexShrink: 0 }}>
         <div
           style={{
             height: '100%',
@@ -460,7 +475,7 @@ ${htmlContent}
               gap: '16px',
             }}
           >
-            <div style={{fontSize: '48px'}}>{appIcon || '...'}</div>
+            <div style={{ fontSize: '48px' }}>{appIcon || '...'}</div>
             <div
               style={{
                 color: theme.textMuted,
@@ -500,34 +515,28 @@ ${htmlContent}
           /* Phase 2: Streaming content */
           <>
             {reasoning && (
-              <div
-                style={{
-                  marginBottom: '16px',
-                  padding: '12px',
-                  background: theme.reasoningBg,
-                  borderRadius: '8px',
-                  borderLeft: `3px solid ${theme.reasoningBorder}`,
-                }}
-              >
+              <div>
                 <div
                   style={{
-                    fontSize: '12px',
-                    color: theme.reasoningLabel,
-                    marginBottom: '6px',
-                    fontWeight: 'bold',
+                    fontSize: '11px',
+                    color: theme.statusText,
+                    marginBottom: '8px',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
                   }}
                 >
                   Reasoning
                 </div>
                 <div
-                  style={{
-                    color: theme.textMuted,
-                    fontStyle: 'italic',
-                    whiteSpace: 'pre-wrap',
+                  dangerouslySetInnerHTML={{
+                    __html:
+                      escapeHtml(reasoning) +
+                      (isLoading && !code
+                        ? `<span style="animation:blink 1s infinite;color:${cursorColor}">&#9610;</span>`
+                        : ''),
                   }}
-                >
-                  {reasoning}
-                </div>
+                  style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: '16px' }}
+                />
               </div>
             )}
             {code && (
@@ -551,7 +560,7 @@ ${htmlContent}
                         ? `<span style="animation:blink 1s infinite;color:${cursorColor}">&#9610;</span>`
                         : ''),
                   }}
-                  style={{whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}
+                  style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
                 />
               </div>
             )}

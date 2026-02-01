@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 /* tslint:disable */
-import {GoogleGenAI} from '@google/genai';
-import {APP_DEFINITIONS_CONFIG, DEFAULT_SYSTEM_PROMPT, SETTINGS_APP_DEFINITION, getSystemPrompt} from '../constants';
-import {InteractionData, StyleConfig} from '../types';
+import { GoogleGenAI } from '@google/genai';
+import { APP_DEFINITIONS_CONFIG, DEFAULT_SYSTEM_PROMPT, SETTINGS_APP_DEFINITION, getSystemPrompt } from '../constants';
+import { InteractionData, StyleConfig } from '../types';
 
 if (!process.env.API_KEY) {
   console.error(
@@ -13,7 +13,7 @@ if (!process.env.API_KEY) {
   );
 }
 
-const ai = new GoogleGenAI({apiKey: process.env.API_KEY!});
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
 
 export async function* streamAppContent(
   interactionHistory: InteractionData[],
@@ -87,13 +87,13 @@ export async function* streamAppContent(
   if (appContext === 'system_settings_page') {
     settingsContext = `\n\nCurrent Settings (pre-fill these values in the form):
 ${JSON.stringify({
-  detailLevel: styleConfig.detailLevel,
-  colorTheme: styleConfig.colorTheme,
-  speedMode: styleConfig.speedMode,
-  enableAnimations: styleConfig.enableAnimations,
-  maxHistoryLength: styleConfig.maxHistoryLength,
-  isStatefulnessEnabled: styleConfig.isStatefulnessEnabled,
-}, null, 2)}
+      detailLevel: styleConfig.detailLevel,
+      colorTheme: styleConfig.colorTheme,
+      speedMode: styleConfig.speedMode,
+      enableAnimations: styleConfig.enableAnimations,
+      maxHistoryLength: styleConfig.maxHistoryLength,
+      isStatefulnessEnabled: styleConfig.isStatefulnessEnabled,
+    }, null, 2)}
 
 Current System Prompt (pre-fill in the textarea):
 ${styleConfig.customSystemPrompt || DEFAULT_SYSTEM_PROMPT}`;
@@ -113,9 +113,12 @@ Generate the HTML content for the window's content area only:`;
   // Determine thinkingConfig based on speedMode
   let thinkingConfig: Record<string, unknown> | undefined;
   if (styleConfig.speedMode === 'fast') {
-    thinkingConfig = {thinkingBudget: 0};
+    thinkingConfig = { thinkingBudget: 0 };
   } else if (styleConfig.speedMode === 'quality') {
-    thinkingConfig = {thinkingBudget: 8192};
+    thinkingConfig = { thinkingBudget: 8192, includeThoughts: true };
+  } else {
+    // balanced mode - enable thoughts with default budget
+    thinkingConfig = { includeThoughts: true };
   }
 
   let lastError: any = null;
@@ -125,12 +128,25 @@ Generate the HTML content for the window's content area only:`;
         model: model,
         contents: fullPrompt,
         config: {
-          ...(thinkingConfig ? {thinkingConfig} : {}),
+          ...(thinkingConfig ? { thinkingConfig } : {}),
         },
       });
 
       for await (const chunk of response) {
-        if (chunk.text) {
+        // Check if this chunk contains thought content via candidates/parts
+        const candidates = (chunk as any).candidates || [];
+        for (const candidate of candidates) {
+          for (const part of candidate.content?.parts || []) {
+            if (part.thought && part.text) {
+              // Yield thought content with marker for UI to style differently
+              yield `<!--THOUGHT-->${part.text}<!--/THOUGHT-->`;
+            } else if (part.text) {
+              yield part.text;
+            }
+          }
+        }
+        // Fallback: if no candidates but chunk.text exists, yield it directly
+        if (candidates.length === 0 && chunk.text) {
           yield chunk.text;
         }
       }
