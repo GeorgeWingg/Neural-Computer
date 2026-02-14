@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 /* tslint:disable */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ColorTheme, InteractionData } from '../types';
 
 interface LoadingTheme {
@@ -119,42 +119,6 @@ function getIframeBaseTheme(colorTheme: ColorTheme): IframeBaseTheme {
   };
 }
 
-function highlightSyntaxForTheme(escaped: string, colorTheme: ColorTheme): string {
-  if (colorTheme === 'light' || colorTheme === 'system') {
-    return escaped
-      .replace(/(\/\/.*)/g, '<span style="color:#6a737d">$1</span>')
-      .replace(/(&lt;\/?[a-zA-Z][a-zA-Z0-9-]*)/g, '<span style="color:#d73a49">$1</span>')
-      .replace(/(\/?&gt;)/g, '<span style="color:#d73a49">$1</span>')
-      .replace(
-        /\b([a-zA-Z-]+)(=)(&quot;)/g,
-        '<span style="color:#22863a">$1</span><span style="color:#444">$2</span><span style="color:#032f62">$3</span>'
-      )
-      .replace(/(&quot;[^&]*?&quot;)/g, '<span style="color:#032f62">$1</span>')
-      .replace(/\b([a-zA-Z-]+)\s*:/g, '<span style="color:#005cc5">$1</span>:')
-      .replace(
-        /\b(function|const|let|var|if|else|return|for|while|new|this|class|import|export|async|await|true|false|null|undefined|document|window)\b/g,
-        '<span style="color:#6f42c1">$1</span>'
-      )
-      .replace(/\b(\d+\.?\d*)\b/g, '<span style="color:#005cc5">$1</span>');
-  }
-  // dark and colorful use the same dracula-ish syntax
-  return escaped
-    .replace(/(\/\/.*)/g, '<span style="color:#6272a4">$1</span>')
-    .replace(/(&lt;\/?[a-zA-Z][a-zA-Z0-9-]*)/g, '<span style="color:#ff79c6">$1</span>')
-    .replace(/(\/?&gt;)/g, '<span style="color:#ff79c6">$1</span>')
-    .replace(
-      /\b([a-zA-Z-]+)(=)(&quot;)/g,
-      '<span style="color:#50fa7b">$1</span><span style="color:#ccc">$2</span><span style="color:#f1fa8c">$3</span>'
-    )
-    .replace(/(&quot;[^&]*?&quot;)/g, '<span style="color:#f1fa8c">$1</span>')
-    .replace(/\b([a-zA-Z-]+)\s*:/g, '<span style="color:#8be9fd">$1</span>:')
-    .replace(
-      /\b(function|const|let|var|if|else|return|for|while|new|this|class|import|export|async|await|true|false|null|undefined|document|window)\b/g,
-      '<span style="color:#bd93f9">$1</span>'
-    )
-    .replace(/\b(\d+\.?\d*)\b/g, '<span style="color:#bd93f9">$1</span>');
-}
-
 interface GeneratedContentProps {
   htmlContent: string;
   onInteract: (data: InteractionData) => void;
@@ -237,6 +201,11 @@ function estimateProgress(content: string, isLoading: boolean): number {
   return progress;
 }
 
+function stripScriptsForPreview(markup: string): string {
+  const withoutClosedScripts = markup.replace(/<script[\s\S]*?<\/script>/gi, '');
+  return withoutClosedScripts.replace(/<script[\s\S]*$/gi, '');
+}
+
 function buildBridgeScript(uiSessionId: string, bridgeToken: string): string {
   return `
   (function() {
@@ -294,10 +263,6 @@ const CSS_KEYFRAMES = `
   from { opacity: 0; }
   to { opacity: 1; }
 }
-@keyframes blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
-}
 `;
 
 export const GeneratedContent: React.FC<GeneratedContentProps> = ({
@@ -318,6 +283,7 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   const ambientRef = useRef(0);
   const scrollAnchorRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const streamingIframeRef = useRef<HTMLIFrameElement>(null);
   const eventSeqRef = useRef(0);
 
   const effectiveColorTheme = rawColorTheme as ColorTheme;
@@ -418,18 +384,75 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
     return () => window.removeEventListener('message', handler);
   }, [onInteract, appContext, uiSessionId, bridgeToken, traceId]);
 
+  const contentWithoutThoughts = useMemo(
+    () => htmlContent.replace(/<!--THOUGHT-->[\s\S]*?<!--\/THOUGHT-->/g, ''),
+    [htmlContent],
+  );
+  const firstTagIndex = contentWithoutThoughts.search(/<[a-zA-Z]/);
+  const code = firstTagIndex >= 0 ? contentWithoutThoughts.substring(firstTagIndex) : '';
+  const previewMarkup = useMemo(() => {
+    if (!contentWithoutThoughts.trim()) return '';
+    if (!/<[a-zA-Z]/.test(contentWithoutThoughts)) {
+      return `
+        <div style="
+          padding: 20px;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          line-height: 1.6;
+          color: #6b7280;
+          background: rgba(255,255,255,0.55);
+          border-radius: 8px;
+          border: 1px solid rgba(148, 163, 184, 0.35);
+          white-space: pre-wrap;
+        ">${escapeHtml(contentWithoutThoughts.trim())}</div>
+      `;
+    }
+    return stripScriptsForPreview(contentWithoutThoughts);
+  }, [contentWithoutThoughts]);
+
+  const streamingPreviewDoc = useMemo(() => {
+    const iframeTheme = getIframeBaseTheme(effectiveColorTheme);
+    return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<style>
+  :root { color-scheme: ${effectiveColorTheme === 'dark' ? 'dark' : 'light'}; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; min-height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    overflow-y: auto;
+    background: ${iframeTheme.bg};
+    color: ${iframeTheme.text};
+  }
+  #gemini-streaming-root { width: 100%; min-height: 100%; }
+</style>
+</head>
+<body><div id="gemini-streaming-root"></div></body></html>`;
+  }, [effectiveColorTheme]);
+
+  const syncStreamingPreview = useCallback(() => {
+    const iframe = streamingIframeRef.current;
+    if (!iframe) return;
+    const root = iframe.contentDocument?.getElementById('gemini-streaming-root');
+    if (!root) return;
+    root.innerHTML = previewMarkup;
+  }, [previewMarkup]);
+
+  useEffect(() => {
+    if (!htmlContent || showIframe) return;
+    syncStreamingPreview();
+  }, [htmlContent, showIframe, syncStreamingPreview]);
+
   // Build iframe srcDoc — bridge script injected BEFORE content in <head>
   const iframeDoc = useMemo(() => {
     if (!htmlContent || isLoading) return '';
     const iframeTheme = getIframeBaseTheme(effectiveColorTheme);
-    // Strip thought markers from content before rendering
-    const cleanedContent = htmlContent.replace(/<!--THOUGHT-->[\s\S]*?<!--\/THOUGHT-->/g, '');
-
     // Check if the content has any HTML tags
-    const hasHtml = /<[a-zA-Z]/.test(cleanedContent);
+    const hasHtml = /<[a-zA-Z]/.test(contentWithoutThoughts);
 
     // If no HTML, wrap the text in a styled message (AI rejection or plain text response)
-    const bodyContent = hasHtml ? cleanedContent : `
+    const bodyContent = hasHtml ? contentWithoutThoughts : `
       <div style="
         padding: 20px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -443,7 +466,7 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
         <div style="margin-bottom: 12px; font-weight: 600; color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
           AI Response
         </div>
-        ${cleanedContent.trim().replace(/</g, '&lt;').replace(/>/g, '&gt;')}
+        ${contentWithoutThoughts.trim().replace(/</g, '&lt;').replace(/>/g, '&gt;')}
       </div>
     `;
 
@@ -497,30 +520,7 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
 <body>
 <div id="gemini-generated-root">${bodyContent}</div>
 </body></html>`;
-  }, [htmlContent, isLoading, uiSessionId, bridgeToken, effectiveColorTheme]);
-
-  // Extract thought content from markers (from Gemini's thinking process)
-  const thoughtRegex = /<!--THOUGHT-->([\s\S]*?)<!--\/THOUGHT-->/g;
-  let reasoning = '';
-  let match;
-  while ((match = thoughtRegex.exec(htmlContent)) !== null) {
-    reasoning += match[1];
-  }
-
-  // Remove thought markers from content to get the actual code
-  const contentWithoutThoughts = htmlContent.replace(thoughtRegex, '');
-  const firstTagIndex = contentWithoutThoughts.search(/<[a-zA-Z]/);
-
-  // If no explicit thoughts, fall back to pre-HTML text as reasoning
-  if (!reasoning) {
-    reasoning = firstTagIndex > 0
-      ? contentWithoutThoughts.substring(0, firstTagIndex).trim()
-      : firstTagIndex === -1
-        ? contentWithoutThoughts.trim()
-        : '';
-  }
-
-  const code = firstTagIndex >= 0 ? contentWithoutThoughts.substring(firstTagIndex) : '';
+  }, [htmlContent, isLoading, uiSessionId, bridgeToken, effectiveColorTheme, contentWithoutThoughts]);
 
   // Status text
   const getStatusText = (): string => {
@@ -563,8 +563,6 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   }
 
   const isGradientBg = effectiveColorTheme === 'colorful';
-  const cursorColor = effectiveColorTheme === 'light' || effectiveColorTheme === 'system' ? '#3b82f6' : '#89b4fa';
-
   // Phase 1 & 2: Loading / Streaming view
   return (
     <div
@@ -654,56 +652,30 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
         ) : (
           /* Phase 2: Streaming content */
           <>
-            {reasoning && (
-              <div>
-                <div
-                  style={{
-                    fontSize: '11px',
-                    color: theme.statusText,
-                    marginBottom: '8px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                  }}
-                >
-                  Reasoning
-                </div>
-                <div
-                  dangerouslySetInnerHTML={{
-                    __html:
-                      escapeHtml(reasoning) +
-                      (isLoading && !code
-                        ? `<span style="animation:blink 1s infinite;color:${cursorColor}">&#9610;</span>`
-                        : ''),
-                  }}
-                  style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: '16px' }}
+            <div style={{ height: '100%', padding: '10px' }}>
+              <div
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  borderRadius: '10px',
+                  overflow: 'hidden',
+                  border: `1px solid ${theme.statusBorder}`,
+                  background: effectiveColorTheme === 'light' || effectiveColorTheme === 'system'
+                    ? 'rgba(255, 255, 255, 0.75)'
+                    : 'rgba(15, 23, 42, 0.28)',
+                }}
+              >
+                <iframe
+                  ref={streamingIframeRef}
+                  srcDoc={streamingPreviewDoc}
+                  onLoad={syncStreamingPreview}
+                  style={{ width: '100%', height: '100%', border: 'none', pointerEvents: 'none' }}
+                  sandbox="allow-forms allow-same-origin"
+                  title={`${appName || 'App Content'} Streaming Preview`}
+                  referrerPolicy="no-referrer"
                 />
               </div>
-            )}
-            {code && (
-              <div>
-                <div
-                  style={{
-                    fontSize: '11px',
-                    color: theme.statusText,
-                    marginBottom: '8px',
-                    textTransform: 'uppercase',
-                    letterSpacing: '1px',
-                  }}
-                >
-                  Generated Code
-                </div>
-                <div
-                  dangerouslySetInnerHTML={{
-                    __html:
-                      highlightSyntaxForTheme(escapeHtml(code), effectiveColorTheme) +
-                      (isLoading
-                        ? `<span style="animation:blink 1s infinite;color:${cursorColor}">&#9610;</span>`
-                        : ''),
-                  }}
-                  style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-                />
-              </div>
-            )}
+            </div>
             {/* Scroll anchor */}
             <div ref={scrollAnchorRef} />
           </>
