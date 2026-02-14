@@ -25,5 +25,23 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "App.tsx",
+    "index.tsx",
+    "constants.ts",
+    "types.ts",
+    "vite.config.ts",
+    "vite-env.d.ts",
+    "components/**/*.tsx",
+    "services/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "GeneratedContent.tsx",
+    "Window.tsx",
+    "Icon.tsx",
+    "ParametersPanel.tsx"
+  ]
 }

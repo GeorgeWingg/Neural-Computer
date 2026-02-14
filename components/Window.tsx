@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 /* tslint:disable */
-import React, {useEffect, useRef, useState} from 'react';
-import {ColorTheme, SpeedMode, StyleConfig, UIDetailLevel} from '../types';
+import React, { useEffect, useRef, useState } from 'react';
+import { ColorTheme, SpeedMode, StyleConfig, UIDetailLevel } from '../types';
 
 interface WindowProps {
   title: string;
@@ -16,6 +16,7 @@ interface WindowProps {
   onStyleConfigChange: (updates: Partial<StyleConfig>) => void;
   onOpenSettings: () => void;
   onExitToDesktop: () => void;
+  onGlobalPrompt?: (prompt: string) => void;
 }
 
 type MenuName = 'gemini' | 'view' | 'settings' | null;
@@ -68,8 +69,10 @@ export const Window: React.FC<WindowProps> = ({
   onStyleConfigChange,
   onOpenSettings,
   onExitToDesktop,
+  onGlobalPrompt,
 }) => {
   const [openMenu, setOpenMenu] = useState<MenuName>(null);
+  const [searchValue, setSearchValue] = useState('');
   const menuBarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -81,6 +84,14 @@ export const Window: React.FC<WindowProps> = ({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (searchValue.trim() && onGlobalPrompt) {
+      onGlobalPrompt(searchValue.trim());
+      setSearchValue('');
+    }
+  };
 
   const toggleMenu = (menu: MenuName) => {
     setOpenMenu((prev) => (prev === menu ? null : menu));
@@ -96,7 +107,7 @@ export const Window: React.FC<WindowProps> = ({
     checked?: boolean;
     onClick: () => void;
     prefix?: string;
-  }> = ({label, checked, onClick, prefix}) => (
+  }> = ({ label, checked, onClick, prefix }) => (
     <div
       style={menuItemStyle}
       onMouseEnter={(e) => {
@@ -113,189 +124,194 @@ export const Window: React.FC<WindowProps> = ({
     </div>
   );
 
-  const detailLevels: {value: UIDetailLevel; label: string}[] = [
-    {value: 'minimal', label: 'Minimal'},
-    {value: 'standard', label: 'Standard'},
-    {value: 'rich', label: 'Rich'},
+  const detailLevels: { value: UIDetailLevel; label: string }[] = [
+    { value: 'minimal', label: 'Minimal' },
+    { value: 'standard', label: 'Standard' },
+    { value: 'rich', label: 'Rich' },
   ];
 
-  const colorThemes: {value: ColorTheme; label: string}[] = [
-    {value: 'system', label: 'System'},
-    {value: 'light', label: 'Light'},
-    {value: 'dark', label: 'Dark'},
-    {value: 'colorful', label: 'Colorful'},
+  const colorThemes: { value: ColorTheme; label: string }[] = [
+    { value: 'system', label: 'System' },
+    { value: 'light', label: 'Light' },
+    { value: 'dark', label: 'Dark' },
+    { value: 'colorful', label: 'Colorful' },
   ];
 
-  const speedModes: {value: SpeedMode; label: string}[] = [
-    {value: 'fast', label: 'Fast'},
-    {value: 'balanced', label: 'Balanced'},
-    {value: 'quality', label: 'Quality'},
+  const speedModes: { value: SpeedMode; label: string }[] = [
+    { value: 'fast', label: 'Fast' },
+    { value: 'balanced', label: 'Balanced' },
+    { value: 'quality', label: 'Quality' },
   ];
 
   const historyOptions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
   return (
-    <div className="w-[800px] h-[600px] bg-white border border-gray-300 rounded-xl shadow-2xl flex flex-col relative overflow-hidden font-sans backdrop-blur-sm bg-white/80">
+    <div className="w-full h-full bg-black flex flex-col relative overflow-hidden font-sans">
       {/* Title Bar */}
-      <div className="bg-gray-800/90 text-white py-2 px-4 font-semibold text-base flex justify-between items-center select-none cursor-default rounded-t-xl flex-shrink-0">
-        <span className="title-bar-text">{title}</span>
+      <div className="bg-[#0a0a0a] text-[#60a5fa] py-1.5 px-4 font-bold text-sm flex justify-between items-center select-none cursor-default flex-shrink-0 border-b border-[#3b82f6]/30">
+        <div className="flex items-center gap-3">
+          <span className="text-blue-400 text-[11px] tracking-wider">GM</span>
+          <span className="tracking-widest uppercase text-xs opacity-80">{title}</span>
+        </div>
+
+        <div className="flex items-center gap-6">
+          <div className="text-[10px] tracking-[0.2em] uppercase opacity-40 font-light hidden md:block">
+            Gemini Operating System
+          </div>
+
+          {isAppOpen && (
+            <button
+              onClick={onExitToDesktop}
+              className="bg-blue-900/20 hover:bg-blue-600 text-blue-400 hover:text-white border border-blue-900/50 rounded-sm px-2 py-0.5 text-[10px] transition-all flex items-center gap-1 group"
+              title="Exit to Desktop"
+            >
+              <span className="font-bold">✕</span>
+              <span className="hidden group-hover:inline opacity-0 group-hover:opacity-100 transition-opacity uppercase tracking-tighter">Exit</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Menu Bar */}
       <div
         ref={menuBarRef}
-        className="bg-gray-100/80 py-1.5 px-3 border-b border-gray-200 select-none flex items-center flex-shrink-0 text-sm text-gray-700"
-        style={{position: 'relative'}}>
+        className="bg-[#111111] py-1 px-3 border-b border-[#333] select-none flex items-center flex-shrink-0 text-sm text-gray-400"
+        style={{ position: 'relative' }}>
         {/* Gemini Menu */}
-        <div style={{position: 'relative'}}>
+        <div style={{ position: 'relative' }}>
           <span
-            className="cursor-pointer hover:text-blue-600 px-2 py-1 rounded"
-            style={openMenu === 'gemini' ? {backgroundColor: '#dbeafe'} : {}}
+            className="cursor-pointer hover:text-white px-2 py-1 rounded transition-colors"
+            style={openMenu === 'gemini' ? { backgroundColor: '#222', color: 'white' } : {}}
             onClick={() => toggleMenu('gemini')}
             role="button"
             tabIndex={0}>
-            Gemini ▾
+            System ▾
           </span>
           {openMenu === 'gemini' && (
-            <div style={dropdownStyle}>
-              <div style={{...headerStyle, fontSize: '13px', color: '#374151', textTransform: 'none', letterSpacing: 'normal', fontWeight: 700}}>
+            <div style={{ ...dropdownStyle, backgroundColor: '#1a1a1a', borderColor: '#333', color: '#ccc' }}>
+              <div style={{ ...headerStyle, fontSize: '13px', color: '#60a5fa', textTransform: 'none', letterSpacing: 'normal', fontWeight: 700 }}>
                 Gemini Computer
               </div>
-              <div style={{padding: '4px 16px 8px', fontSize: '12px', color: '#6b7280'}}>
-                An AI-powered desktop simulation.
+              <div style={{ padding: '4px 16px 8px', fontSize: '12px', color: '#888' }}>
+                AI-powered desktop environment.
               </div>
-              <div style={separatorStyle} />
-              <div style={{padding: '6px 16px', fontSize: '12px', color: '#9ca3af'}}>
-                Version 2.0.0
+              <div style={{ ...separatorStyle, backgroundColor: '#333' }} />
+              <div style={{ padding: '6px 16px', fontSize: '12px', color: '#555' }}>
+                Version 3.0.0-PRO
               </div>
             </div>
           )}
         </div>
 
         {/* View Menu */}
-        <div style={{position: 'relative', marginLeft: '4px'}}>
+        <div style={{ position: 'relative', marginLeft: '4px' }}>
           <span
-            className="cursor-pointer hover:text-blue-600 px-2 py-1 rounded"
-            style={openMenu === 'view' ? {backgroundColor: '#dbeafe'} : {}}
+            className="cursor-pointer hover:text-white px-2 py-1 rounded transition-colors"
+            style={openMenu === 'view' ? { backgroundColor: '#222', color: 'white' } : {}}
             onClick={() => toggleMenu('view')}
             role="button"
             tabIndex={0}>
             View ▾
           </span>
           {openMenu === 'view' && (
-            <div style={dropdownStyle}>
-              <div style={headerStyle}>Detail Level</div>
+            <div style={{ ...dropdownStyle, backgroundColor: '#1a1a1a', borderColor: '#333', color: '#ccc', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
+              <div style={{ ...headerStyle, color: '#3b82f6' }}>Detail Level</div>
               {detailLevels.map((d) => (
-                <MenuItemRow
+                <div
                   key={d.value}
-                  label={d.label}
-                  checked={styleConfig.detailLevel === d.value}
-                  onClick={() => onStyleConfigChange({detailLevel: d.value})}
-                />
+                  className="px-4 py-1.5 cursor-pointer hover:bg-blue-900/20 text-xs transition-colors"
+                  onClick={() => handleItemClick(() => onStyleConfigChange({ detailLevel: d.value }))}
+                >
+                  {styleConfig.detailLevel === d.value ? '● ' : '○ '} {d.label}
+                </div>
               ))}
-              <div style={separatorStyle} />
-              <div style={headerStyle}>Color Theme</div>
+              <div style={{ ...separatorStyle, backgroundColor: '#333' }} />
+              <div style={{ ...headerStyle, color: '#3b82f6' }}>Color Theme</div>
               {colorThemes.map((t) => (
-                <MenuItemRow
+                <div
                   key={t.value}
-                  label={t.label}
-                  checked={styleConfig.colorTheme === t.value}
-                  onClick={() => onStyleConfigChange({colorTheme: t.value})}
-                />
+                  className="px-4 py-1.5 cursor-pointer hover:bg-blue-900/20 text-xs transition-colors"
+                  onClick={() => handleItemClick(() => onStyleConfigChange({ colorTheme: t.value }))}
+                >
+                  {styleConfig.colorTheme === t.value ? '● ' : '○ '} {t.label}
+                </div>
               ))}
-              <div style={separatorStyle} />
-              <MenuItemRow
-                label="Animations"
-                checked={styleConfig.enableAnimations}
-                onClick={() => onStyleConfigChange({enableAnimations: !styleConfig.enableAnimations})}
-              />
             </div>
           )}
         </div>
 
         {/* Settings Menu */}
-        <div style={{position: 'relative', marginLeft: '4px'}}>
+        <div style={{ position: 'relative', marginLeft: '4px' }}>
           <span
-            className="cursor-pointer hover:text-blue-600 px-2 py-1 rounded"
-            style={openMenu === 'settings' ? {backgroundColor: '#dbeafe'} : {}}
+            className="cursor-pointer hover:text-white px-2 py-1 rounded transition-colors"
+            style={openMenu === 'settings' ? { backgroundColor: '#222', color: 'white' } : {}}
             onClick={() => toggleMenu('settings')}
             role="button"
             tabIndex={0}>
             Settings ▾
           </span>
           {openMenu === 'settings' && (
-            <div style={dropdownStyle}>
-              <div style={headerStyle}>Speed Mode</div>
+            <div style={{ ...dropdownStyle, backgroundColor: '#1a1a1a', borderColor: '#333', color: '#ccc', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
+              <div style={{ ...headerStyle, color: '#3b82f6' }}>Speed Mode</div>
               {speedModes.map((s) => (
-                <MenuItemRow
+                <div
                   key={s.value}
-                  label={s.label}
-                  checked={styleConfig.speedMode === s.value}
-                  onClick={() => onStyleConfigChange({speedMode: s.value})}
-                />
+                  className="px-4 py-1.5 cursor-pointer hover:bg-blue-900/20 text-xs transition-colors"
+                  onClick={() => handleItemClick(() => onStyleConfigChange({ speedMode: s.value }))}
+                >
+                  {styleConfig.speedMode === s.value ? '● ' : '○ '} {s.label}
+                </div>
               ))}
-              <div style={separatorStyle} />
-              <div style={headerStyle}>History Length ({styleConfig.maxHistoryLength})</div>
-              <div style={{display: 'flex', flexWrap: 'wrap', padding: '4px 12px', gap: '2px'}}>
+              <div style={{ ...separatorStyle, backgroundColor: '#333' }} />
+              <div style={{ ...headerStyle, color: '#3b82f6' }}>History ({styleConfig.maxHistoryLength})</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', padding: '4px 12px', gap: '4px' }}>
                 {historyOptions.map((n) => (
                   <span
                     key={n}
-                    onClick={() => handleItemClick(() => onStyleConfigChange({maxHistoryLength: n}))}
-                    onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLSpanElement).style.backgroundColor = '#dbeafe';
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLSpanElement).style.backgroundColor =
-                        styleConfig.maxHistoryLength === n ? '#bfdbfe' : 'transparent';
-                    }}
-                    style={{
-                      padding: '2px 6px',
-                      borderRadius: '3px',
-                      cursor: 'pointer',
-                      fontSize: '12px',
-                      fontWeight: styleConfig.maxHistoryLength === n ? 700 : 400,
-                      backgroundColor: styleConfig.maxHistoryLength === n ? '#bfdbfe' : 'transparent',
-                    }}>
+                    onClick={() => handleItemClick(() => onStyleConfigChange({ maxHistoryLength: n }))}
+                    className={`px-1.5 py-0.5 rounded cursor-pointer text-[10px] transition-colors ${styleConfig.maxHistoryLength === n ? 'bg-blue-600 text-white' : 'hover:bg-gray-800 text-gray-500'}`}
+                  >
                     {n}
                   </span>
                 ))}
               </div>
-              <div style={separatorStyle} />
-              <MenuItemRow
-                label="Statefulness"
-                checked={styleConfig.isStatefulnessEnabled}
-                onClick={() => onStyleConfigChange({isStatefulnessEnabled: !styleConfig.isStatefulnessEnabled})}
-              />
-              <div style={separatorStyle} />
-              <MenuItemRow
-                label="Clear Cache"
-                onClick={() => onStyleConfigChange({isStatefulnessEnabled: false})}
-                prefix=""
-              />
-              <MenuItemRow
-                label="Open Full Settings..."
+              <div style={{ ...separatorStyle, backgroundColor: '#333' }} />
+              <div
+                className="px-4 py-1.5 cursor-pointer hover:bg-blue-900/20 text-xs transition-colors flex items-center justify-between"
+                onClick={() => handleItemClick(() => onStyleConfigChange({ isStatefulnessEnabled: !styleConfig.isStatefulnessEnabled }))}
+              >
+                <span>Statefulness</span>
+                <span>{styleConfig.isStatefulnessEnabled ? 'ON' : 'OFF'}</span>
+              </div>
+              <div style={{ ...separatorStyle, backgroundColor: '#333' }} />
+              <div
+                className="px-4 py-1.5 cursor-pointer hover:bg-blue-900/20 text-xs transition-colors text-blue-400 font-bold"
                 onClick={onOpenSettings}
-                prefix=""
-              />
+              >
+                PRO Settings...
+              </div>
             </div>
           )}
         </div>
 
-        {/* Exit button - far right */}
-        {isAppOpen && (
-          <span
-            className="cursor-pointer hover:text-red-600 px-2 py-1 rounded"
-            style={{marginLeft: 'auto'}}
-            onClick={onExitToDesktop}
-            role="button"
-            tabIndex={0}>
-            ✕ Exit
-          </span>
-        )}
+        {/* Search / Global Prompt */}
+        <form
+          onSubmit={handleSearchSubmit}
+          className="ml-6 flex-grow max-w-md relative"
+        >
+          <input
+            type="text"
+            value={searchValue}
+            onChange={(e) => setSearchValue(e.target.value)}
+            placeholder="Command the system or search..."
+            className="w-full bg-[#050505] border border-[#333] rounded-full px-4 py-1 text-xs text-gray-300 focus:outline-none focus:border-[#3b82f6] transition-all placeholder:text-gray-700"
+          />
+          <button type="submit" className="hidden" />
+        </form>
       </div>
 
       {/* Content */}
-      <div className="flex-grow overflow-y-auto">{children}</div>
+      <div className="flex-grow overflow-y-auto bg-black">{children}</div>
     </div>
   );
 };

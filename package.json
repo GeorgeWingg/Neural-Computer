@@ -4,19 +4,25 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "vite",
+    "dev:server": "node server.mjs",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "validate": "npm run typecheck && npm run build"
   },
   "dependencies": {
-    "react-dom": "^19.1.0",
+    "@mariozechner/pi-ai": "^0.52.10",
+    "@tailwindcss/browser": "^4.1.10",
+    "express": "^5.2.1",
     "react": "^19.1.0",
-    "@google/genai": "^1.5.1",
-    "@tailwindcss/browser": "^4.1.10"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.1",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

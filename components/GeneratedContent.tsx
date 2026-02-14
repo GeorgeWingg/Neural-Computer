@@ -23,6 +23,15 @@ interface LoadingTheme {
   reasoningLabel: string;
 }
 
+interface IframeBaseTheme {
+  bg: string;
+  text: string;
+  controlSurface: string;
+  controlBorder: string;
+  placeholder: string;
+  buttonHover: string;
+}
+
 function getLoadingTheme(colorTheme: ColorTheme): LoadingTheme {
   if (colorTheme === 'dark') {
     return {
@@ -79,6 +88,37 @@ function getLoadingTheme(colorTheme: ColorTheme): LoadingTheme {
   };
 }
 
+function getIframeBaseTheme(colorTheme: ColorTheme): IframeBaseTheme {
+  if (colorTheme === 'dark') {
+    return {
+      bg: 'radial-gradient(140% 100% at 50% 0%, #17263c 0%, #0d1627 60%, #0a1220 100%)',
+      text: '#e5ecff',
+      controlSurface: 'rgba(15, 23, 42, 0.78)',
+      controlBorder: 'rgba(148, 163, 184, 0.35)',
+      placeholder: 'rgba(203, 213, 225, 0.8)',
+      buttonHover: 'rgba(59, 130, 246, 0.28)',
+    };
+  }
+  if (colorTheme === 'colorful') {
+    return {
+      bg: 'radial-gradient(140% 100% at 50% 0%, #1d4ed8 0%, #3730a3 55%, #312e81 100%)',
+      text: '#eef2ff',
+      controlSurface: 'rgba(30, 41, 59, 0.74)',
+      controlBorder: 'rgba(165, 180, 252, 0.45)',
+      placeholder: 'rgba(224, 231, 255, 0.85)',
+      buttonHover: 'rgba(129, 140, 248, 0.35)',
+    };
+  }
+  return {
+    bg: 'radial-gradient(160% 120% at 50% 0%, #e2e8f0 0%, #dbeafe 46%, #c7d2fe 100%)',
+    text: '#0f172a',
+    controlSurface: 'rgba(255, 255, 255, 0.76)',
+    controlBorder: 'rgba(59, 130, 246, 0.28)',
+    placeholder: 'rgba(30, 41, 59, 0.55)',
+    buttonHover: 'rgba(59, 130, 246, 0.16)',
+  };
+}
+
 function highlightSyntaxForTheme(escaped: string, colorTheme: ColorTheme): string {
   if (colorTheme === 'light' || colorTheme === 'system') {
     return escaped
@@ -123,6 +163,8 @@ interface GeneratedContentProps {
   appName?: string;
   appIcon?: string;
   colorTheme?: ColorTheme;
+  traceId?: string;
+  uiSessionId?: string;
 }
 
 function escapeHtml(str: string): string {
@@ -195,37 +237,53 @@ function estimateProgress(content: string, isLoading: boolean): number {
   return progress;
 }
 
-const BRIDGE_SCRIPT = `
-document.addEventListener('click', function(e) {
-  var target = e.target;
-  while (target && target !== document.body) {
-    if (target.getAttribute && target.getAttribute('data-interaction-id')) {
-      var id = target.getAttribute('data-interaction-id');
-      var type = target.getAttribute('data-interaction-type') || '';
-      var valueFrom = target.getAttribute('data-value-from');
-      var value = target.getAttribute('data-interaction-value') || '';
-      if (valueFrom) {
-        var inputEl = document.getElementById(valueFrom);
-        if (inputEl) value = inputEl.value || inputEl.innerText || '';
-      }
+function buildBridgeScript(uiSessionId: string, bridgeToken: string): string {
+  return `
+  (function() {
+    var sessionId = ${JSON.stringify(uiSessionId)};
+    var token = ${JSON.stringify(bridgeToken)};
+    function post(payload) {
       window.parent.postMessage({
         type: 'gemini-os-interaction',
-        payload: {
-          id: id,
-          interactionType: type,
-          value: value,
-          elementType: target.tagName.toLowerCase(),
-          elementText: (target.innerText || '').substring(0, 75)
-        }
+        uiSessionId: sessionId,
+        bridgeToken: token,
+        payload: payload
       }, '*');
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      return;
     }
-    target = target.parentElement;
-  }
-}, true);
-`;
+    try {
+      post({ type: 'bridge_ready' });
+      document.addEventListener('click', function(e) {
+        var target = e.target;
+        while (target && target !== document.body) {
+          if (target.getAttribute && target.getAttribute('data-interaction-id')) {
+            var id = target.getAttribute('data-interaction-id');
+            var interactionType = target.getAttribute('data-interaction-type') || '';
+            var valueFrom = target.getAttribute('data-value-from');
+            var value = target.getAttribute('data-interaction-value') || '';
+            if (valueFrom) {
+              var inputEl = document.getElementById(valueFrom);
+              if (inputEl) value = inputEl.value || inputEl.innerText || '';
+            }
+            post({
+              id: id,
+              interactionType: interactionType,
+              value: value,
+              elementType: target.tagName.toLowerCase(),
+              elementText: (target.innerText || '').substring(0, 75)
+            });
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            return;
+          }
+          target = target.parentElement;
+        }
+      }, true);
+    } catch (err) {
+      post({ type: 'bridge_error', message: String(err) });
+    }
+  })();
+  `;
+}
 
 const CSS_KEYFRAMES = `
 @keyframes shimmer {
@@ -249,15 +307,21 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   isLoading,
   appName,
   appIcon,
-  colorTheme = 'dark',
+  colorTheme: rawColorTheme = 'dark',
+  traceId,
+  uiSessionId = 'session_unknown',
 }) => {
   const [displayProgress, setDisplayProgress] = useState(0);
   const [smoothProgress, setSmoothProgress] = useState(0);
   const [showIframe, setShowIframe] = useState(false);
+  const [bridgeToken, setBridgeToken] = useState(() => `bridge_${Math.random().toString(36).slice(2)}`);
   const ambientRef = useRef(0);
   const scrollAnchorRef = useRef<HTMLDivElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const eventSeqRef = useRef(0);
 
-  const theme = getLoadingTheme(colorTheme);
+  const effectiveColorTheme = rawColorTheme as ColorTheme;
+  const theme = getLoadingTheme(effectiveColorTheme);
   const rawProgress = estimateProgress(htmlContent, isLoading);
 
   // Reset state when appContext changes (new app opened)
@@ -266,6 +330,8 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
     setSmoothProgress(0);
     setShowIframe(false);
     ambientRef.current = 0;
+    eventSeqRef.current = 0;
+    setBridgeToken(`bridge_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`);
   }, [appContext]);
 
   // Handle completion: crossfade to iframe
@@ -325,25 +391,37 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   // postMessage listener for iframe interactions
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      if (event.data?.type === 'gemini-os-interaction') {
-        const p = event.data.payload;
-        onInteract({
-          id: p.id,
-          type: p.interactionType || 'generic_click',
-          value: p.value || undefined,
-          elementType: p.elementType,
-          elementText: p.elementText,
-          appContext: appContext,
-        });
-      }
+      if (event.data?.type !== 'gemini-os-interaction') return;
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      if (event.data?.uiSessionId !== uiSessionId) return;
+      if (event.data?.bridgeToken !== bridgeToken) return;
+
+      const p = event.data.payload || {};
+      if (!p.id || typeof p.id !== 'string') return;
+
+      eventSeqRef.current += 1;
+      onInteract({
+        id: p.id,
+        type: p.interactionType || 'generic_click',
+        value: p.value || undefined,
+        elementType: p.elementType || 'unknown',
+        elementText: p.elementText || p.id,
+        appContext: appContext,
+        traceId,
+        uiSessionId,
+        eventSeq: eventSeqRef.current,
+        source: 'iframe',
+        validationState: 'accepted',
+      });
     };
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [onInteract, appContext]);
+  }, [onInteract, appContext, uiSessionId, bridgeToken, traceId]);
 
   // Build iframe srcDoc — bridge script injected BEFORE content in <head>
   const iframeDoc = useMemo(() => {
     if (!htmlContent || isLoading) return '';
+    const iframeTheme = getIframeBaseTheme(effectiveColorTheme);
     // Strip thought markers from content before rendering
     const cleanedContent = htmlContent.replace(/<!--THOUGHT-->[\s\S]*?<!--\/THOUGHT-->/g, '');
 
@@ -372,16 +450,54 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
     return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
 <style>
+  :root {
+    --gemini-base-bg: ${iframeTheme.bg};
+    --gemini-base-text: ${iframeTheme.text};
+    --gemini-control-surface: ${iframeTheme.controlSurface};
+    --gemini-control-border: ${iframeTheme.controlBorder};
+    --gemini-control-placeholder: ${iframeTheme.placeholder};
+    --gemini-control-hover: ${iframeTheme.buttonHover};
+    color-scheme: ${effectiveColorTheme === 'dark' ? 'dark' : 'light'};
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 12px; overflow-y: auto; }
+  html, body { width: 100%; height: 100%; min-height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    overflow-y: auto;
+    background: var(--gemini-base-bg);
+    color: var(--gemini-base-text);
+  }
+  #gemini-generated-root { width: 100%; min-height: 100%; }
+  button, input, textarea, select {
+    font: inherit;
+    color: inherit;
+    border-radius: 10px;
+    border: 1px solid var(--gemini-control-border);
+    background: var(--gemini-control-surface);
+  }
+  button {
+    cursor: pointer;
+    transition: background-color 120ms ease-in-out, border-color 120ms ease-in-out;
+  }
+  button:hover {
+    background: var(--gemini-control-hover);
+    border-color: color-mix(in srgb, var(--gemini-control-border) 55%, white 45%);
+  }
+  input, textarea, select {
+    padding: 6px 10px;
+  }
+  input::placeholder, textarea::placeholder {
+    color: var(--gemini-control-placeholder);
+  }
 </style>
-<script>${BRIDGE_SCRIPT}<\/script>
+<script>${buildBridgeScript(uiSessionId, bridgeToken)}<\/script>
 </head>
 <body>
-${bodyContent}
+<div id="gemini-generated-root">${bodyContent}</div>
 </body></html>`;
-  }, [htmlContent, isLoading]);
+  }, [htmlContent, isLoading, uiSessionId, bridgeToken, effectiveColorTheme]);
 
   // Extract thought content from markers (from Gemini's thinking process)
   const thoughtRegex = /<!--THOUGHT-->([\s\S]*?)<!--\/THOUGHT-->/g;
@@ -430,10 +546,12 @@ ${bodyContent}
       >
         <style>{CSS_KEYFRAMES}</style>
         <iframe
+          ref={iframeRef}
           srcDoc={iframeDoc}
           style={{ width: '100%', height: '100%', border: 'none' }}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          sandbox="allow-scripts allow-forms"
           title={appName || 'App Content'}
+          referrerPolicy="no-referrer"
         />
       </div>
     );
@@ -444,8 +562,8 @@ ${bodyContent}
     return null;
   }
 
-  const isGradientBg = colorTheme === 'colorful';
-  const cursorColor = colorTheme === 'light' || colorTheme === 'system' ? '#3b82f6' : '#89b4fa';
+  const isGradientBg = effectiveColorTheme === 'colorful';
+  const cursorColor = effectiveColorTheme === 'light' || effectiveColorTheme === 'system' ? '#3b82f6' : '#89b4fa';
 
   // Phase 1 & 2: Loading / Streaming view
   return (
@@ -481,7 +599,6 @@ ${bodyContent}
         style={{
           flex: 1,
           overflow: 'auto',
-          padding: '16px',
           fontSize: '13px',
           lineHeight: '1.6',
         }}
@@ -578,7 +695,7 @@ ${bodyContent}
                 <div
                   dangerouslySetInnerHTML={{
                     __html:
-                      highlightSyntaxForTheme(escapeHtml(code), colorTheme) +
+                      highlightSyntaxForTheme(escapeHtml(code), effectiveColorTheme) +
                       (isLoading
                         ? `<span style="animation:blink 1s infinite;color:${cursorColor}">&#9610;</span>`
                         : ''),

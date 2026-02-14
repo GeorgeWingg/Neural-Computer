@@ -3,58 +3,173 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 /* tslint:disable */
-import { GoogleGenAI } from '@google/genai';
 import { APP_DEFINITIONS_CONFIG, DEFAULT_SYSTEM_PROMPT, SETTINGS_APP_DEFINITION, getSystemPrompt } from '../constants';
-import { InteractionData, StyleConfig } from '../types';
+import {
+  AppSkill,
+  InteractionData,
+  LLMConfig,
+  SettingsSkillSchema,
+  StyleConfig,
+} from '../types';
 
-if (!process.env.API_KEY) {
-  console.error(
-    'API_KEY environment variable is not set. The application will not be able to connect to the Gemini API.',
-  );
+export interface LlmCatalogProvider {
+  providerId: string;
+  models: { id: string; name: string }[];
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+interface ApiErrorDetails {
+  code?: string;
+  message: string;
+  details?: unknown;
+}
 
-export async function* streamAppContent(
+async function parseApiError(response: Response): Promise<ApiErrorDetails> {
+  let payload: any = null;
+  let text = '';
+
+  try {
+    payload = await response.clone().json();
+  } catch {
+    // Non-JSON response body.
+  }
+
+  if (!payload) {
+    try {
+      text = await response.text();
+    } catch {
+      // Ignore read failures.
+    }
+  }
+
+  const code = payload?.error?.code || payload?.code;
+  const messageFromPayload =
+    (typeof payload?.error === 'string' ? payload.error : undefined) || payload?.error?.message || payload?.message;
+  const details = payload?.error && typeof payload.error === 'object' ? payload.error.details : payload?.details;
+  const message =
+    typeof messageFromPayload === 'string' && messageFromPayload.trim().length > 0
+      ? messageFromPayload.trim()
+      : (text || `HTTP ${response.status}`).trim();
+
+  return { code, message, details };
+}
+
+function formatApiErrorForThrow(apiError: ApiErrorDetails): string {
+  if (apiError.code) {
+    return `${apiError.code}: ${apiError.message}`;
+  }
+  return apiError.message;
+}
+
+const fallbackSettingsSchema: SettingsSkillSchema = {
+  version: '1.0.0',
+  title: 'Gemini OS Settings',
+  description: 'Fallback schema while settings skill is unavailable.',
+  generatedBy: 'fallback_settings_skill',
+  sections: [
+    {
+      id: 'experience',
+      title: 'Experience',
+      fields: [
+        { key: 'detailLevel', label: 'Detail Level', control: 'select' },
+        { key: 'colorTheme', label: 'Color Theme', control: 'select' },
+        { key: 'speedMode', label: 'Speed Mode', control: 'select' },
+        { key: 'enableAnimations', label: 'Enable Animations', control: 'toggle' },
+        { key: 'maxHistoryLength', label: 'History Length', control: 'number', min: 0, max: 10 },
+        { key: 'isStatefulnessEnabled', label: 'Statefulness', control: 'toggle' },
+        { key: 'qualityAutoRetryEnabled', label: 'Auto Retry On Low Quality', control: 'toggle' },
+      ],
+    },
+    {
+      id: 'model',
+      title: 'Model Runtime',
+      fields: [
+        { key: 'providerId', label: 'Provider', control: 'select' },
+        { key: 'modelId', label: 'Model', control: 'select' },
+        { key: 'toolTier', label: 'Tool Tier', control: 'select' },
+      ],
+    },
+    {
+      id: 'advanced',
+      title: 'Advanced',
+      fields: [
+        { key: 'googleSearchApiKey', label: 'Google Search API Key', control: 'password' },
+        { key: 'googleSearchCx', label: 'Google Search CX', control: 'text' },
+        { key: 'customSystemPrompt', label: 'Custom System Prompt', control: 'textarea' },
+      ],
+    },
+  ],
+};
+
+export async function fetchLlmCatalog(): Promise<LlmCatalogProvider[]> {
+  const response = await fetch('/api/llm/catalog');
+  if (!response.ok) {
+    const apiError = await parseApiError(response);
+    throw new Error(`Failed to load model catalog: ${formatApiErrorForThrow(apiError)}`);
+  }
+  const payload = await response.json();
+  return Array.isArray(payload.providers) ? payload.providers : [];
+}
+
+export async function saveProviderCredential(sessionId: string, providerId: string, apiKey: string): Promise<void> {
+  const response = await fetch('/api/credentials/set', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, providerId, apiKey }),
+  });
+  if (!response.ok) {
+    const apiError = await parseApiError(response);
+    throw new Error(`Failed to save credential: ${formatApiErrorForThrow(apiError)}`);
+  }
+}
+
+export async function generateSettingsSchema(
+  sessionId: string,
+  styleConfig: StyleConfig,
+  llmConfig: LLMConfig,
+): Promise<SettingsSkillSchema> {
+  const response = await fetch('/api/settings/schema', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, styleConfig, llmConfig }),
+  });
+
+  if (!response.ok) {
+    const apiError = await parseApiError(response);
+    throw new Error(`Settings schema request failed: ${formatApiErrorForThrow(apiError)}`);
+  }
+
+  const payload = await response.json();
+  if (payload && payload.schema && Array.isArray(payload.schema.sections)) {
+    return payload.schema as SettingsSkillSchema;
+  }
+  return fallbackSettingsSchema;
+}
+
+function buildUserMessage(
   interactionHistory: InteractionData[],
   styleConfig: StyleConfig,
-): AsyncGenerator<string, void, void> {
-  const model = 'gemini-3-flash-preview';
-
-  if (!process.env.API_KEY) {
-    yield `<div class="p-4 text-red-700 bg-red-100 rounded-lg">
-      <p class="font-bold text-lg">Configuration Error</p>
-      <p class="mt-2">The API_KEY is not configured. Please set the API_KEY environment variable.</p>
-    </div>`;
-    return;
-  }
-
-  if (interactionHistory.length === 0) {
-    yield `<div class="p-4 text-orange-700 bg-orange-100 rounded-lg">
-      <p class="font-bold text-lg">No interaction data provided.</p>
-    </div>`;
-    return;
-  }
-
+  retryHint?: string,
+): string {
   const currentInteraction = interactionHistory[0];
-  const appContext = currentInteraction.appContext;
-  const systemPrompt = getSystemPrompt(styleConfig, appContext);
-
   const pastInteractions = interactionHistory.slice(1);
 
   const currentElementName =
     currentInteraction.elementText ||
     currentInteraction.id ||
     'Unknown Element';
-  let currentInteractionSummary = `Current User Interaction: Clicked on '${currentElementName}' (Type: ${currentInteraction.type || 'N/A'}, ID: ${currentInteraction.id || 'N/A'}).`;
-  if (currentInteraction.value) {
-    currentInteractionSummary += ` Associated value: '${currentInteraction.value.substring(0, 100)}'.`;
+
+  let currentInteractionSummary = '';
+  if (currentInteraction.type === 'user_prompt') {
+    currentInteractionSummary = `User Global Prompt: "${currentInteraction.value}". The user is using the system search/prompt bar to command the OS. Carry out their request within the current context or by launching/creating something new.`;
+  } else {
+    currentInteractionSummary = `Current User Interaction: Clicked on '${currentElementName}' (Type: ${currentInteraction.type || 'N/A'}, ID: ${currentInteraction.id || 'N/A'}).`;
+    if (currentInteraction.value) {
+      currentInteractionSummary += ` Associated value: '${currentInteraction.value.substring(0, 120)}'.`;
+    }
   }
 
   const allAppDefs = [...APP_DEFINITIONS_CONFIG, SETTINGS_APP_DEFINITION];
-  const currentAppDef = allAppDefs.find(
-    (app) => app.id === currentInteraction.appContext,
-  );
+  const currentAppDef = allAppDefs.find((app) => app.id === currentInteraction.appContext);
   const currentAppContext = currentInteraction.appContext
     ? `Current App Context: '${currentAppDef?.name || currentInteraction.appContext}'.`
     : 'No specific app context for current interaction.';
@@ -63,126 +178,130 @@ export async function* streamAppContent(
   if (pastInteractions.length > 0) {
     const numPrevInteractionsToMention =
       styleConfig.maxHistoryLength - 1 > 0 ? styleConfig.maxHistoryLength - 1 : 0;
-    historyPromptSegment = `\n\nPrevious User Interactions (up to ${numPrevInteractionsToMention} most recent, oldest first in this list segment but chronologically before current):`;
+    historyPromptSegment = `\n\nPrevious User Interactions (up to ${numPrevInteractionsToMention} most recent, oldest first in this list segment):`;
 
     pastInteractions.forEach((interaction, index) => {
-      const pastElementName =
-        interaction.elementText || interaction.id || 'Unknown Element';
-      const appDef = allAppDefs.find(
-        (app) => app.id === interaction.appContext,
-      );
-      const appName = interaction.appContext
-        ? appDef?.name || interaction.appContext
-        : 'N/A';
+      const pastElementName = interaction.elementText || interaction.id || 'Unknown Element';
+      const appDef = allAppDefs.find((app) => app.id === interaction.appContext);
+      const appName = interaction.appContext ? appDef?.name || interaction.appContext : 'N/A';
       historyPromptSegment += `\n${index + 1}. (App: ${appName}) Clicked '${pastElementName}' (Type: ${interaction.type || 'N/A'}, ID: ${interaction.id || 'N/A'})`;
       if (interaction.value) {
-        historyPromptSegment += ` with value '${interaction.value.substring(0, 50)}'`;
+        historyPromptSegment += ` with value '${interaction.value.substring(0, 60)}'`;
       }
       historyPromptSegment += '.';
     });
   }
 
-  // For settings page, include current config and default prompt as context
-  let settingsContext = '';
-  if (appContext === 'system_settings_page') {
-    settingsContext = `\n\nCurrent Settings (pre-fill these values in the form):
-${JSON.stringify({
-      detailLevel: styleConfig.detailLevel,
-      colorTheme: styleConfig.colorTheme,
-      speedMode: styleConfig.speedMode,
-      enableAnimations: styleConfig.enableAnimations,
-      maxHistoryLength: styleConfig.maxHistoryLength,
-      isStatefulnessEnabled: styleConfig.isStatefulnessEnabled,
-    }, null, 2)}
-
-Current System Prompt (pre-fill in the textarea):
-${styleConfig.customSystemPrompt || DEFAULT_SYSTEM_PROMPT}`;
-  }
-
-  const fullPrompt = `${systemPrompt}
-
+  return `
 ${currentInteractionSummary}
 ${currentAppContext}
-${historyPromptSegment}${settingsContext}
+${historyPromptSegment}
+${retryHint ? `\n\nQuality Retry Hint:\n${retryHint}` : ''}
 
 Full Context for Current Interaction (for your reference, primarily use summaries and history):
 ${JSON.stringify(currentInteraction, null, 1)}
 
 Generate the HTML content for the window's content area only:`;
+}
 
-  // Determine thinkingConfig based on speedMode
-  let thinkingConfig: Record<string, unknown> | undefined;
-  if (styleConfig.speedMode === 'fast') {
-    thinkingConfig = { thinkingBudget: 0 };
-  } else if (styleConfig.speedMode === 'quality') {
-    thinkingConfig = { thinkingBudget: 8192, includeThoughts: true };
-  } else {
-    // balanced mode - enable thoughts with default budget
-    thinkingConfig = { includeThoughts: true };
+export async function* streamAppContent(
+  interactionHistory: InteractionData[],
+  styleConfig: StyleConfig,
+  llmConfig: LLMConfig,
+  sessionId: string,
+  activeSkills: AppSkill[] = [],
+  retryHint?: string,
+): AsyncGenerator<string, void, void> {
+  if (!interactionHistory.length) {
+    yield `<div class="p-4 text-orange-700 bg-orange-100 rounded-lg"><p class="font-bold text-lg">No interaction data provided.</p></div>`;
+    return;
   }
 
-  let lastError: any = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const response = await ai.models.generateContentStream({
-        model: model,
-        contents: fullPrompt,
-        config: {
-          ...(thinkingConfig ? { thinkingConfig } : {}),
-        },
-      });
+  const currentInteraction = interactionHistory[0];
+  const appContext = currentInteraction.appContext;
+  const baseSystemPrompt = getSystemPrompt(styleConfig, appContext);
 
-      for await (const chunk of response) {
-        // Check if this chunk contains thought content via candidates/parts
-        const candidates = (chunk as any).candidates || [];
-        for (const candidate of candidates) {
-          for (const part of candidate.content?.parts || []) {
-            if (part.thought && part.text) {
-              // Yield thought content with marker for UI to style differently
-              yield `<!--THOUGHT-->${part.text}<!--/THOUGHT-->`;
-            } else if (part.text) {
-              yield part.text;
-            }
-          }
-        }
-        // Fallback: if no candidates but chunk.text exists, yield it directly
-        if (candidates.length === 0 && chunk.text) {
-          yield chunk.text;
-        }
-      }
-      return; // Success, exit generator
-    } catch (error) {
-      lastError = error;
-      const isRetryable = error instanceof Error &&
-        (error.message.includes('503') || error.message.includes('UNAVAILABLE') || error.message.includes('overloaded'));
-      if (isRetryable && attempt < 2) {
-        console.warn(`Gemini API returned retryable error (attempt ${attempt + 1}/3), retrying in ${(attempt + 1) * 2}s...`, error);
-        await new Promise(r => setTimeout(r, (attempt + 1) * 2000));
+  const skillPromptSegment = activeSkills.length
+    ? `\n\nSkill Context (retrieved runtime skills, highest priority first):\n${activeSkills
+        .map((skill, index) => {
+          const mustDo = skill.instructionsDo.map((entry) => `- ${entry}`).join('\n');
+          const avoid = skill.instructionsAvoid.map((entry) => `- ${entry}`).join('\n');
+          return `${index + 1}. ${skill.title}\nScope: ${skill.scope}${skill.appContext ? ` (app=${skill.appContext})` : ''}\nDo:\n${mustDo}\nAvoid:\n${avoid}`;
+        })
+        .join('\n\n')}`
+    : '';
+
+  const systemPrompt = `${baseSystemPrompt}${skillPromptSegment}`;
+  const userMessage = buildUserMessage(interactionHistory, styleConfig, retryHint);
+
+  const response = await fetch('/api/llm/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId,
+      llmConfig,
+      systemPrompt,
+      userMessage,
+      speedMode: styleConfig.speedMode,
+      googleSearchApiKey: styleConfig.googleSearchApiKey,
+      googleSearchCx: styleConfig.googleSearchCx,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    const apiError = await parseApiError(response);
+    throw new Error(formatApiErrorForThrow(apiError));
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let event: any;
+      try {
+        event = JSON.parse(trimmed);
+      } catch {
         continue;
       }
-      break;
+
+      if (event.type === 'chunk' && typeof event.chunk === 'string') {
+        yield event.chunk;
+      } else if (event.type === 'thought' && typeof event.text === 'string') {
+        yield `<!--THOUGHT-->${event.text}<!--/THOUGHT-->`;
+      } else if (event.type === 'error') {
+        throw new Error(String(event.error || 'Unknown runtime error.'));
+      }
     }
   }
 
-  // All retries failed — yield the error HTML
-  console.error('Error streaming from Gemini (all retries exhausted):', lastError);
-  let errorMessage = 'An error occurred while generating content.';
-  if (lastError instanceof Error && typeof lastError.message === 'string') {
-    errorMessage += ` Details: ${lastError.message}`;
-  } else if (
-    typeof lastError === 'object' &&
-    lastError !== null &&
-    'message' in lastError &&
-    typeof (lastError as any).message === 'string'
-  ) {
-    errorMessage += ` Details: ${(lastError as any).message}`;
-  } else if (typeof lastError === 'string') {
-    errorMessage += ` Details: ${lastError}`;
+  if (buffer.trim()) {
+    try {
+      const event = JSON.parse(buffer.trim());
+      if (event.type === 'error') {
+        throw new Error(String(event.error || 'Unknown runtime error.'));
+      }
+    } catch {
+      // Ignore trailing malformed event.
+    }
   }
+}
 
-  yield `<div class="p-4 text-red-700 bg-red-100 rounded-lg">
-    <p class="font-bold text-lg">Error Generating Content</p>
-    <p class="mt-2">${errorMessage}</p>
-    <p class="mt-1">This may be due to an API key issue, network problem, or misconfiguration. Please check the developer console for more details.</p>
-  </div>`;
+export function getDefaultSettingsSchema(): SettingsSkillSchema {
+  return fallbackSettingsSchema;
+}
+
+export function getDefaultSettingsPrompt(): string {
+  return DEFAULT_SYSTEM_PROMPT;
 }
