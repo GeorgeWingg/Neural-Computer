@@ -20,7 +20,7 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 const BASH_POLICY_ERROR_PREFIX = "WORKSPACE_POLICY_ERROR:";
 const PI_TOOL_PROMPT_DESCRIPTIONS = Object.freeze({
-	emit_screen: "Publish user-visible window HTML to the host UI",
+	emit_screen: "Publish user-visible window updates (full replace or revision-checked patch ops)",
 	read_screen: "Read current rendered screen state in bounded form",
 	onboarding_get_state: "Read onboarding lifecycle and checkpoint state",
 	onboarding_set_workspace_root: "Set workspace root for onboarding runtime",
@@ -746,9 +746,34 @@ const onboardingCompleteToolDefinition = {
 const emitScreenToolDefinition = {
 	name: "emit_screen",
 	description:
-		"Publish a full HTML snapshot for the current window. This is the canonical user-visible output channel.",
+		"Publish user-visible output for the current window. Supports full replace and patch operations against data-ui-id targets.",
 	parameters: Type.Object({
-		html: Type.String({ description: "Full HTML snapshot for the current window content area." }),
+		op: Type.Optional(
+			Type.String({
+				description:
+					"Operation: replace (default) | append_child | prepend_child | replace_node | remove_node | set_text | set_attr.",
+			}),
+		),
+		html: Type.Optional(Type.String({ description: "Required for op=replace. Full HTML snapshot for the window content area." })),
+		baseRevision: Type.Optional(
+			Type.Number({
+				description: "Required for patch ops. Use read_screen.meta.revision.",
+				minimum: 1,
+			}),
+		),
+		targetId: Type.Optional(
+			Type.String({
+				description: "Required for patch ops. Matches the target element's data-ui-id value.",
+			}),
+		),
+		htmlFragment: Type.Optional(
+			Type.String({
+				description: "Required for append_child, prepend_child, and replace_node.",
+			}),
+		),
+		text: Type.Optional(Type.String({ description: "Required for set_text." })),
+		attrName: Type.Optional(Type.String({ description: "Required for set_attr." })),
+		attrValue: Type.Optional(Type.String({ description: "Required for set_attr." })),
 		appContext: Type.Optional(Type.String({ description: "Optional app context id for diagnostics." })),
 		revisionNote: Type.Optional(Type.String({ description: "Optional short note describing this revision." })),
 		isFinal: Type.Optional(Type.Boolean({ description: "True when this is the intended final render for this turn." })),
@@ -845,14 +870,26 @@ export function buildPiToolGuidancePrompt(toolDefinitions = []) {
 
 	if (hasEmitScreen) {
 		guidelinesList.push("Use emit_screen to publish all user-visible UI output; do not rely on plain text output.");
+		guidelinesList.push(
+			"Prefer emit_screen patch ops for localized updates (append_child, prepend_child, replace_node, remove_node, set_text, set_attr).",
+		);
+		guidelinesList.push(
+			"For patch ops, set baseRevision to read_screen.meta.revision and targetId to a stable data-ui-id anchor.",
+		);
+		guidelinesList.push("Use emit_screen op=replace with full html for first render, major layout changes, or patch recovery.");
 	}
 	if (hasReadScreen) {
 		guidelinesList.push(
-			"Default: do NOT call read_screen. Call it only when current screen state is required and cannot be inferred.",
+			"When a turn starts from an interaction on an already-rendered screen, call read_screen before non-trivial UI edits.",
 		);
 		guidelinesList.push("When reading screen state, use the lightest read mode first (meta, then outline, then snippet).");
 		guidelinesList.push("Use at most one read_screen call per turn unless explicitly recovering from stale state.");
 		guidelinesList.push("After read_screen, publish updated user-visible output with emit_screen in the same turn unless blocked.");
+	}
+	if (hasRead && hasEmitScreen) {
+		guidelinesList.push(
+			"Screen history may exist at .neural/ui-history/<YYYY-MM-DD>/. Read it only when continuity is unclear; prioritize emitting useful UI now.",
+		);
 	}
 
 	if (hasBash && !hasGrep && !hasFind && !hasLs) {

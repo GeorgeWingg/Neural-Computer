@@ -4,20 +4,24 @@ Generate HTML for the window content area only, based on the current interaction
 
 **Core Output Contract**
 1. Publish visible UI with the `emit_screen` tool; this is the canonical output channel.
-2. Put ONLY raw HTML for the content area in `emit_screen.html`.
+2. For `emit_screen` `op=replace`, put ONLY raw HTML for the content area in `emit_screen.html`.
 3. Do NOT output markdown fences.
 4. Do NOT output `<html>` or `<body>` wrappers.
 5. You MAY use `<style>` and `<script>` when needed for functionality and polish.
 6. Do NOT output a top-level page title (`<h1>` / `<h2>`) because the host window already provides it.
-7. `read_screen` is optional; do not call it by default.
-8. Call `read_screen` only when existing screen state is required and cannot be inferred from interaction context.
-9. If you call `read_screen`, use the lightest mode first (`meta`, then `outline`, then `snippet`).
+7. When modifying an existing rendered screen, call `read_screen` before non-trivial UI edits.
+8. If you call `read_screen`, use the lightest mode first (`meta`, then `outline`, then `snippet`).
+9. Prefer `emit_screen` patch ops for localized edits (`append_child`, `prepend_child`, `replace_node`, `remove_node`, `set_text`, `set_attr`).
+10. For patch ops, set `baseRevision` to `read_screen.meta.revision` and set `targetId` to a stable `data-ui-id`.
+11. After reading, publish updated UI with `emit_screen` in the same turn unless blocked.
+12. If continuity is unclear and file tools are available, you may inspect `.neural/ui-history/YYYY-MM-DD/` snapshots; do not delay immediate `emit_screen` output.
 
 **Interactivity Contract**
 1. Every interactive element MUST include `data-interaction-id`.
 2. You MAY include `data-interaction-type` and `data-value-from`.
 3. `data-interaction-id` values must be unique within each generated screen.
 4. Prefer descriptive IDs (e.g. `open_recent_docs`, `launch_gallery`, `save_note_action`).
+5. Add stable `data-ui-id` anchors to key containers so future patch updates can target them.
 
 **Desktop Quality Contract**
 When app context is `desktop_env`:

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 /* tslint:disable */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GeneratedContent } from './components/GeneratedContent';
 import { InsightsPanel } from './components/InsightsPanel';
 import { SettingsSkillPanel } from './components/SettingsSkillPanel';
@@ -34,6 +34,7 @@ import {
   createRenderOutputClientState,
   resolveCanonicalHtml,
 } from './services/renderOutputClient';
+import { shouldApplyPartialRenderPreview } from './services/streamingUiPolicy';
 import { getOnboardingState } from './services/onboardingService';
 import { getSessionId } from './services/session';
 import {
@@ -266,6 +267,13 @@ function isHostRenderedApp(appId?: string | null): boolean {
   return appId === SETTINGS_APP_DEFINITION.id || appId === 'insights_app';
 }
 
+interface CommittedScreenSnapshot {
+  revision: number;
+  html: string;
+  isFinal: boolean;
+  updatedAt: number;
+}
+
 const App: React.FC = () => {
   const sessionId = useMemo(() => getSessionId(), []);
   const [activeApp, setActiveApp] = useState<AppDefinition | null>(DESKTOP_APP_DEFINITION);
@@ -277,6 +285,8 @@ const App: React.FC = () => {
   const [activeTraceId, setActiveTraceId] = useState<string>('');
   const [activeUiSessionId, setActiveUiSessionId] = useState<string>(createUiSessionId());
   const [onboardingState, setOnboardingState] = useState<OnboardingState | null>(null);
+  const llmContentRef = useRef<string>('');
+  const committedScreensByAppRef = useRef<Record<string, CommittedScreenSnapshot>>({});
 
   const [styleConfig, setStyleConfig] = useState<StyleConfig>(() => {
     try {
@@ -356,6 +366,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(LLM_STORAGE_KEY, JSON.stringify(llmConfig));
   }, [llmConfig]);
+
+  useEffect(() => {
+    llmContentRef.current = llmContent;
+  }, [llmContent]);
 
   useEffect(() => {
     (async () => {
@@ -502,7 +516,7 @@ const App: React.FC = () => {
       ]);
 
       const runAttempt = async (retryHint?: string) => {
-        let accumulated = '';
+        let accumulated = llmContentRef.current || '';
         let textChunkChars = 0;
         let failed = false;
         let lastStreamFrameAt = 0;
@@ -510,6 +524,16 @@ const App: React.FC = () => {
         let lastPartialRenderFrameAt = 0;
         let lastPartialRenderLength = 0;
         let renderOutputState = createRenderOutputClientState();
+        const committedScreen = committedScreensByAppRef.current[appContext];
+        const currentRenderedScreen =
+          committedScreen && typeof committedScreen.html === 'string' && committedScreen.html.trim()
+            ? {
+                html: committedScreen.html,
+                revision: committedScreen.revision,
+                isFinal: committedScreen.isFinal,
+                appContext,
+              }
+            : undefined;
         lastRuntimeErrorMessage = null;
         try {
           const stream = streamAppContent(
@@ -527,6 +551,9 @@ const App: React.FC = () => {
                 if (signal.aborted) return;
                 if (event.type === 'render_output_partial') {
                   if (!event.html) return;
+                  if (!shouldApplyPartialRenderPreview({ partialHtml: event.html, previousHtml: accumulated })) {
+                    return;
+                  }
                   accumulated = event.html;
                   setLlmContent(accumulated);
                   const now = Date.now();
@@ -550,6 +577,13 @@ const App: React.FC = () => {
                   return;
                 }
                 if (event.type === 'render_output') {
+                  const renderAppContext = event.appContext || appContext;
+                  committedScreensByAppRef.current[renderAppContext] = {
+                    revision: event.revision,
+                    html: event.html,
+                    isFinal: Boolean(event.isFinal),
+                    updatedAt: Date.now(),
+                  };
                   renderOutputState = applyRenderOutputEvent(renderOutputState, event);
                   accumulated = resolveCanonicalHtml(renderOutputState);
                   setLlmContent(accumulated);
@@ -600,6 +634,7 @@ const App: React.FC = () => {
                   });
                 }
               },
+              currentRenderedScreen,
             },
           );
 

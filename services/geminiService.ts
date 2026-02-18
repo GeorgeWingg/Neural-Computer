@@ -32,6 +32,19 @@ export interface StreamRequestDebugSnapshot {
   userMessage: string;
   activeSkills: DebugSkillSnapshot[];
   retryHint?: string;
+  currentRenderedScreen?: {
+    revision: number;
+    htmlChars: number;
+    appContext?: string;
+    isFinal?: boolean;
+  };
+}
+
+export interface CurrentRenderedScreenSnapshot {
+  html: string;
+  revision: number;
+  isFinal?: boolean;
+  appContext?: string;
 }
 
 export type StreamClientEvent =
@@ -64,6 +77,7 @@ export type StreamClientEvent =
 interface StreamAppContentOptions {
   onPreparedRequest?: (snapshot: StreamRequestDebugSnapshot) => void;
   onStreamEvent?: (event: StreamClientEvent) => void;
+  currentRenderedScreen?: CurrentRenderedScreenSnapshot;
 }
 
 export interface ParsedServerStreamEvent {
@@ -445,6 +459,21 @@ export async function* streamAppContent(
   };
   const promptHistory = contextMemoryMode === 'legacy' ? interactionHistory : [currentInteraction];
   const userMessage = buildUserMessage(promptHistory, effectiveViewport, contextMemoryMode, retryHint);
+  const currentRenderedScreen =
+    options?.currentRenderedScreen &&
+    typeof options.currentRenderedScreen.html === 'string' &&
+    options.currentRenderedScreen.html.trim()
+      ? {
+          html: options.currentRenderedScreen.html,
+          revision: Math.max(1, Math.floor(Number(options.currentRenderedScreen.revision) || 1)),
+          isFinal: Boolean(options.currentRenderedScreen.isFinal),
+          appContext:
+            typeof options.currentRenderedScreen.appContext === 'string' &&
+            options.currentRenderedScreen.appContext.trim()
+              ? options.currentRenderedScreen.appContext.trim()
+              : undefined,
+        }
+      : undefined;
   options?.onPreparedRequest?.({
     createdAt: Date.now(),
     appContext: appContext || 'desktop_env',
@@ -458,6 +487,14 @@ export async function* streamAppContent(
     userMessage,
     activeSkills: [],
     retryHint,
+    currentRenderedScreen: currentRenderedScreen
+      ? {
+          revision: currentRenderedScreen.revision,
+          htmlChars: currentRenderedScreen.html.length,
+          appContext: currentRenderedScreen.appContext,
+          isFinal: currentRenderedScreen.isFinal,
+        }
+      : undefined,
   });
 
   const response = await fetchStreamResponseWithRetry(apiUrl('/api/llm/stream'), {
@@ -471,6 +508,7 @@ export async function* streamAppContent(
       appContext: appContext || 'desktop_env',
       currentInteraction,
       contextMemoryMode,
+      currentRenderedScreen,
       googleSearchApiKey: styleConfig.googleSearchApiKey,
       googleSearchCx: styleConfig.googleSearchCx,
       workspaceRoot: styleConfig.workspaceRoot,

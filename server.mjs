@@ -20,6 +20,7 @@ import {
 } from "./services/piToolRuntime.mjs";
 import { applyEmitScreen, createRenderOutputState, validateEmitScreenArgs } from "./services/renderOutputTool.mjs";
 import { createReadScreenUsageState, runReadScreenToolCall } from "./services/readScreenRuntime.mjs";
+import { createUiHistoryRuntime } from "./services/uiHistoryRuntime.mjs";
 import {
 	WorkspacePolicyError,
 	createWorkspacePolicy,
@@ -97,6 +98,12 @@ const EMIT_SCREEN_MAX_CALLS = parseNumberEnv(
 	"GEMINI_OS_EMIT_SCREEN_MAX_CALLS",
 	24,
 	{ min: 1, max: 256 },
+);
+const UI_HISTORY_RETENTION_DAYS = parseNumberEnv(
+	"NEURAL_COMPUTER_UI_HISTORY_RETENTION_DAYS",
+	"GEMINI_OS_UI_HISTORY_RETENTION_DAYS",
+	21,
+	{ min: 1, max: 365 },
 );
 const EMIT_SCREEN_PARTIAL_MIN_CHAR_DELTA = 64;
 const EMIT_SCREEN_PARTIAL_MIN_INTERVAL_MS = 120;
@@ -666,6 +673,27 @@ function normalizeInteractionPayload(interaction, appContext) {
 		uiSessionId: typeof source.uiSessionId === "string" ? source.uiSessionId : undefined,
 		eventSeq: Number.isFinite(source.eventSeq) ? Number(source.eventSeq) : undefined,
 		source: source.source === "host" || source.source === "iframe" ? source.source : "host",
+	};
+}
+
+function normalizeCurrentRenderedScreenSeed(seed, appContext) {
+	const source = seed && typeof seed === "object" ? seed : {};
+	const html = typeof source.html === "string" ? source.html : "";
+	if (!html.trim()) return null;
+	const normalizedAppContext = normalizeAppContext(appContext);
+	const sourceAppContext =
+		typeof source.appContext === "string" && source.appContext.trim()
+			? normalizeAppContext(source.appContext)
+			: normalizedAppContext;
+	if (sourceAppContext !== normalizedAppContext) return null;
+
+	const numericRevision = Number(source.revision);
+	const revision = Number.isFinite(numericRevision) && numericRevision > 0 ? Math.floor(numericRevision) : 1;
+	return {
+		html: html.slice(0, EMIT_SCREEN_MAX_HTML_CHARS),
+		revision,
+		isFinal: Boolean(source.isFinal),
+		appContext: normalizedAppContext,
 	};
 }
 
@@ -1342,6 +1370,10 @@ const workspaceToolRuntime = createWorkspaceToolRuntime({
 	maxOutputChars: 16_000,
 	maxReadChars: 12_000,
 });
+const uiHistoryRuntime = createUiHistoryRuntime({
+	retentionDays: UI_HISTORY_RETENTION_DAYS,
+	logger: console,
+});
 
 async function runStreamWithToolLoop({
 	res,
@@ -1357,6 +1389,10 @@ async function runStreamWithToolLoop({
 	onboardingHandlers = {},
 	googleSearchApiKey,
 	googleSearchCx,
+	sessionId,
+	interaction,
+	seedRenderedScreen,
+	uiHistoryRuntime,
 	signal,
 }) {
 	const toolDefinitions = buildToolDefinitions(normalizedLlmConfig.toolTier, {
@@ -1380,7 +1416,14 @@ async function runStreamWithToolLoop({
 	let emittedTextChunks = 0;
 	let assistantOutputText = "";
 	let finalMessage = null;
-	let renderOutputState = createRenderOutputState();
+	let renderOutputState = seedRenderedScreen
+		? {
+				renderCount: Number(seedRenderedScreen.revision) || 1,
+				latestHtml: String(seedRenderedScreen.html || ""),
+				lastIsFinal: Boolean(seedRenderedScreen.isFinal),
+			}
+		: createRenderOutputState();
+	let turnRenderOutputCount = 0;
 	let readScreenUsageState = createReadScreenUsageState();
 	let activeWorkspaceRoot = workspaceRoot;
 	const emitScreenPartialByToolCall = new Map();
@@ -1388,7 +1431,7 @@ async function runStreamWithToolLoop({
 		finalMessage,
 		assistantOutputText,
 		emittedTextChunks,
-		renderOutputCount: renderOutputState.renderCount,
+		renderOutputCount: turnRenderOutputCount,
 		latestRenderOutputHtml: renderOutputState.latestHtml,
 	});
 
@@ -1437,6 +1480,13 @@ async function runStreamWithToolLoop({
 						partialContent.arguments && typeof partialContent.arguments === "object"
 							? partialContent.arguments
 							: {};
+					const partialOp =
+						typeof partialArgs.op === "string" && partialArgs.op.trim()
+							? partialArgs.op.trim().toLowerCase()
+							: "replace";
+					if (partialOp !== "replace") {
+						continue;
+					}
 					const partialHtml = typeof partialArgs.html === "string" ? partialArgs.html : "";
 					if (!partialHtml) {
 						continue;
@@ -1497,16 +1547,17 @@ async function runStreamWithToolLoop({
 			return buildLoopResult();
 		}
 
-			for (const toolCall of toolCalls) {
-				let toolText = "";
-				let isError = false;
-				if (typeof toolCall.id === "string" && toolCall.id.trim()) {
-					emitScreenPartialByToolCall.delete(toolCall.id.trim());
-				}
-					if (toolCall.name === "emit_screen") {
-				if (renderOutputState.renderCount >= EMIT_SCREEN_MAX_CALLS) {
+		for (const toolCall of toolCalls) {
+			let toolText = "";
+			let isError = false;
+			if (typeof toolCall.id === "string" && toolCall.id.trim()) {
+				emitScreenPartialByToolCall.delete(toolCall.id.trim());
+			}
+
+			if (toolCall.name === "emit_screen") {
+				if (turnRenderOutputCount >= EMIT_SCREEN_MAX_CALLS) {
 					isError = true;
-					toolText = `emit_screen call budget exceeded (${EMIT_SCREEN_MAX_CALLS} calls).`;
+					toolText = `emit_screen call budget exceeded (${EMIT_SCREEN_MAX_CALLS} calls per turn).`;
 				} else {
 					const validation = validateEmitScreenArgs(toolCall.arguments, {
 						maxHtmlChars: EMIT_SCREEN_MAX_HTML_CHARS,
@@ -1519,25 +1570,51 @@ async function runStreamWithToolLoop({
 							toolName: toolCall.name,
 							toolCallId: toolCall.id,
 						});
-						renderOutputState = applied.nextState;
-						assistantOutputText = renderOutputState.latestHtml;
-						writeChunk(res, applied.streamEvent);
-						toolText = applied.toolResultText;
+						if (!applied?.ok) {
+							isError = true;
+							toolText = `emit_screen ${applied?.errorCode || "ERROR"}: ${applied?.error || "unknown error"}`;
+						} else {
+							renderOutputState = applied.nextState;
+							turnRenderOutputCount += 1;
+							assistantOutputText = renderOutputState.latestHtml;
+							writeChunk(res, applied.streamEvent);
+							toolText = applied.toolResultText;
+							if (uiHistoryRuntime && typeof uiHistoryRuntime.persistEmitScreenRevision === "function") {
+								void uiHistoryRuntime
+									.persistEmitScreenRevision({
+										workspaceRoot: activeWorkspaceRoot,
+										html: applied.streamEvent.html,
+										revision: applied.streamEvent.revision,
+										isFinal: validation.value.isFinal,
+										revisionNote: validation.value.revisionNote,
+										appContext: validation.value.appContext || appContext || interaction?.appContext,
+										toolCallId: toolCall.id,
+										sessionId,
+										interaction,
+									})
+									.catch((error) => {
+										console.warn(
+											"[UiHistoryRuntime] persist failed",
+											error instanceof Error ? error.message : String(error),
+										);
+									});
+							}
 						}
 					}
-				} else if (toolCall.name === "read_screen") {
-					const readResult = runReadScreenToolCall({
-						args: toolCall.arguments,
-						renderOutputState,
-						usageState: readScreenUsageState,
-						appContext,
-					});
-					readScreenUsageState = readResult.nextState;
-					isError = Boolean(readResult.isError);
-					toolText = String(readResult.text || "");
-				} else if (normalizedLlmConfig.toolTier === "none" && !onboardingMode) {
-					isError = true;
-					toolText = "Tool access disabled by tool tier policy.";
+				}
+			} else if (toolCall.name === "read_screen") {
+				const readResult = runReadScreenToolCall({
+					args: toolCall.arguments,
+					renderOutputState,
+					usageState: readScreenUsageState,
+					appContext,
+				});
+				readScreenUsageState = readResult.nextState;
+				isError = Boolean(readResult.isError);
+				toolText = String(readResult.text || "");
+			} else if (normalizedLlmConfig.toolTier === "none" && !onboardingMode) {
+				isError = true;
+				toolText = "Tool access disabled by tool tier policy.";
 			} else {
 				const toolResult = await executeToolCall(toolCall, {
 					runtimeConfig: workspaceToolRuntime,
@@ -1976,15 +2053,16 @@ app.post("/api/llm/stream", async (req, res) => {
 		userMessage = "",
 		appContext,
 		currentInteraction,
-			contextMemoryMode,
-			speedMode: _speedMode,
-			googleSearchApiKey,
-			googleSearchCx,
-		} = req.body || {};
-		const workspaceRoot =
-			typeof req.body?.styleConfig?.workspaceRoot === "string"
-				? req.body.styleConfig.workspaceRoot
-				: req.body?.workspaceRoot || DEFAULT_WORKSPACE_ROOT;
+		currentRenderedScreen,
+		contextMemoryMode,
+		speedMode: _speedMode,
+		googleSearchApiKey,
+		googleSearchCx,
+	} = req.body || {};
+	const workspaceRoot =
+		typeof req.body?.styleConfig?.workspaceRoot === "string"
+			? req.body.styleConfig.workspaceRoot
+			: req.body?.workspaceRoot || DEFAULT_WORKSPACE_ROOT;
 
 	const resolvedLlm = normalizeLlmConfig(llmConfig);
 	if (resolvedLlm.error) {
@@ -2052,6 +2130,7 @@ app.post("/api/llm/stream", async (req, res) => {
 	const normalizedInteraction = currentInteraction
 		? normalizeInteractionPayload(currentInteraction, normalizedAppContext)
 		: buildFallbackInteraction(normalizedAppContext, userMessage);
+	const seedRenderedScreen = normalizeCurrentRenderedScreenSeed(currentRenderedScreen, normalizedAppContext);
 	const filesystemSkillsContext = await buildFilesystemSkillsContext(validatedWorkspaceRoot);
 	const memoryBootstrapPrompt = await buildMemoryBootstrapContext({
 		workspaceRoot: validatedWorkspaceRoot,
@@ -2259,6 +2338,10 @@ app.post("/api/llm/stream", async (req, res) => {
 					onboardingHandlers,
 					googleSearchApiKey,
 					googleSearchCx,
+					sessionId,
+					interaction: normalizedInteraction,
+					seedRenderedScreen,
+					uiHistoryRuntime,
 					signal: controller.signal,
 				});
 

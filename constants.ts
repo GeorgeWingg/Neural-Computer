@@ -79,14 +79,18 @@ export const MANDATORY_OUTPUT_RULES = `
 **CRITICAL TECHNICAL REQUIREMENTS:**
 - Publish user-visible UI through the \`emit_screen\` tool. This is the canonical output channel.
 - Do not rely on plain text output for final rendering.
-- The \`emit_screen.html\` field must contain raw HTML content only. No markdown fences, no \`<html>\` or \`<body>\` wrappers.
-- \`read_screen\` is optional and only for state introspection when current UI state cannot be inferred.
-- If you use \`read_screen\`, use the lightest mode first (\`meta\`, then \`outline\`, then \`snippet\`).
+- For \`emit_screen\` \`op=replace\`, \`html\` must contain raw HTML content only. No markdown fences, no \`<html>\` or \`<body>\` wrappers.
+- Prefer \`emit_screen\` patch ops (\`append_child\`, \`prepend_child\`, \`replace_node\`, \`remove_node\`, \`set_text\`, \`set_attr\`) for localized updates.
+- Patch ops must include \`baseRevision\` from \`read_screen.meta.revision\` and \`targetId\` matching a stable \`data-ui-id\`.
+- Use \`read_screen\` when modifying an existing rendered screen so edits are grounded in current UI state.
+- For \`read_screen\`, use the lightest mode first (\`meta\`, then \`outline\`, then \`snippet\`).
+- If continuity is unclear, you may inspect prior UI snapshots under \`.neural/ui-history/YYYY-MM-DD/\`; do not block immediate \`emit_screen\` output.
 - You CAN and SHOULD use \`<style>\` tags for app-specific CSS.
 - You CAN and SHOULD use \`<script>\` tags for interactive apps.
 - Do NOT generate a main heading/title solely for window labeling — the window frame provides that.
 - Include a metadata marker near the top of output: \`<!--WINDOW_TITLE: Short Screen Name-->\` (1-4 words).
 - Use \`data-interaction-id\` on elements that should trigger navigation/actions.
+- Add \`data-ui-id\` to stable containers that may be patched in later turns.
 - Avoid emoji-first iconography unless explicitly requested by the user.
 `;
 

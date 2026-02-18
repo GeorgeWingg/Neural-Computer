@@ -7,9 +7,9 @@ describe("read_screen policy alignment", () => {
 		expect(MANDATORY_OUTPUT_RULES).toContain("canonical output channel");
 	});
 
-	it("describes read_screen as optional and bounded", () => {
+	it("describes read_screen as state-grounding for existing screens", () => {
 		expect(MANDATORY_OUTPUT_RULES).toContain("read_screen");
-		expect(MANDATORY_OUTPUT_RULES).toContain("optional");
+		expect(MANDATORY_OUTPUT_RULES).toContain("existing rendered screen");
 		expect(MANDATORY_OUTPUT_RULES).toContain("lightest mode first");
 	});
 });
