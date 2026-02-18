@@ -32,11 +32,33 @@ export interface StreamRequestDebugSnapshot {
   userMessage: string;
   activeSkills: DebugSkillSnapshot[];
   retryHint?: string;
+  currentRenderedScreen?: {
+    revision: number;
+    htmlChars: number;
+    appContext?: string;
+    isFinal?: boolean;
+  };
+}
+
+export interface CurrentRenderedScreenSnapshot {
+  html: string;
+  revision: number;
+  isFinal?: boolean;
+  appContext?: string;
 }
 
 export type StreamClientEvent =
   | { type: 'chunk'; chunk: string }
   | { type: 'thought'; text: string }
+  | {
+      type: 'render_output_partial';
+      toolName?: string;
+      toolCallId?: string;
+      html: string;
+      isFinal?: boolean;
+      appContext?: string;
+      revisionNote?: string;
+    }
   | {
       type: 'render_output';
       toolName?: string;
@@ -55,6 +77,7 @@ export type StreamClientEvent =
 interface StreamAppContentOptions {
   onPreparedRequest?: (snapshot: StreamRequestDebugSnapshot) => void;
   onStreamEvent?: (event: StreamClientEvent) => void;
+  currentRenderedScreen?: CurrentRenderedScreenSnapshot;
 }
 
 export interface ParsedServerStreamEvent {
@@ -79,6 +102,7 @@ function isTauriRuntime(): boolean {
 
 function resolveApiOrigin(): string {
   const envOrigin =
+    (import.meta as any)?.env?.VITE_NEURAL_OS_API_ORIGIN ||
     (import.meta as any)?.env?.VITE_NEURAL_COMPUTER_API_ORIGIN ||
     (import.meta as any)?.env?.VITE_GEMINI_OS_API_ORIGIN;
   if (typeof envOrigin === 'string' && envOrigin.trim().length > 0) {
@@ -175,7 +199,7 @@ function formatApiErrorForThrow(apiError: ApiErrorDetails): string {
 
 const fallbackSettingsSchema: SettingsSkillSchema = {
   version: '1.0.0',
-  title: 'Neural Computer Settings',
+  title: 'Neural OS Settings',
   description: 'Fallback schema while settings skill is unavailable.',
   generatedBy: 'fallback_settings_skill',
   sections: [
@@ -436,6 +460,21 @@ export async function* streamAppContent(
   };
   const promptHistory = contextMemoryMode === 'legacy' ? interactionHistory : [currentInteraction];
   const userMessage = buildUserMessage(promptHistory, effectiveViewport, contextMemoryMode, retryHint);
+  const currentRenderedScreen =
+    options?.currentRenderedScreen &&
+    typeof options.currentRenderedScreen.html === 'string' &&
+    options.currentRenderedScreen.html.trim()
+      ? {
+          html: options.currentRenderedScreen.html,
+          revision: Math.max(1, Math.floor(Number(options.currentRenderedScreen.revision) || 1)),
+          isFinal: Boolean(options.currentRenderedScreen.isFinal),
+          appContext:
+            typeof options.currentRenderedScreen.appContext === 'string' &&
+            options.currentRenderedScreen.appContext.trim()
+              ? options.currentRenderedScreen.appContext.trim()
+              : undefined,
+        }
+      : undefined;
   options?.onPreparedRequest?.({
     createdAt: Date.now(),
     appContext: appContext || 'desktop_env',
@@ -449,6 +488,14 @@ export async function* streamAppContent(
     userMessage,
     activeSkills: [],
     retryHint,
+    currentRenderedScreen: currentRenderedScreen
+      ? {
+          revision: currentRenderedScreen.revision,
+          htmlChars: currentRenderedScreen.html.length,
+          appContext: currentRenderedScreen.appContext,
+          isFinal: currentRenderedScreen.isFinal,
+        }
+      : undefined,
   });
 
   const response = await fetchStreamResponseWithRetry(apiUrl('/api/llm/stream'), {
@@ -462,6 +509,7 @@ export async function* streamAppContent(
       appContext: appContext || 'desktop_env',
       currentInteraction,
       contextMemoryMode,
+      currentRenderedScreen,
       googleSearchApiKey: styleConfig.googleSearchApiKey,
       googleSearchCx: styleConfig.googleSearchCx,
       workspaceRoot: styleConfig.workspaceRoot,
@@ -507,6 +555,20 @@ export async function* streamAppContent(
           toolName: typeof event.toolName === 'string' ? event.toolName : undefined,
           toolCallId: typeof event.toolCallId === 'string' ? event.toolCallId : undefined,
           revision,
+          html: event.html,
+          isFinal: Boolean(event.isFinal),
+          appContext: typeof event.appContext === 'string' ? event.appContext : undefined,
+          revisionNote: typeof event.revisionNote === 'string' ? event.revisionNote : undefined,
+        },
+        outputChunk: null,
+      };
+    }
+    if (event.type === 'render_output_partial' && typeof event.html === 'string') {
+      return {
+        clientEvent: {
+          type: 'render_output_partial',
+          toolName: typeof event.toolName === 'string' ? event.toolName : undefined,
+          toolCallId: typeof event.toolCallId === 'string' ? event.toolCallId : undefined,
           html: event.html,
           isFinal: Boolean(event.isFinal),
           appContext: typeof event.appContext === 'string' ? event.appContext : undefined,

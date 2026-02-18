@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
 	completeSimple,
 	getEnvApiKey,
@@ -19,17 +18,27 @@ import {
 	executeToolCall,
 } from "./services/piToolRuntime.mjs";
 import { applyEmitScreen, createRenderOutputState, validateEmitScreenArgs } from "./services/renderOutputTool.mjs";
+import { createReadScreenUsageState, runReadScreenToolCall } from "./services/readScreenRuntime.mjs";
+import { createUiHistoryRuntime } from "./services/uiHistoryRuntime.mjs";
 import {
 	WorkspacePolicyError,
 	createWorkspacePolicy,
 	resolveWorkspaceRoot,
 } from "./services/workspaceSandbox.mjs";
 import { ensureWorkspaceScaffold } from "./services/workspaceBootstrap.mjs";
+import {
+	resolvePathAgainstRuntimeRoot,
+	resolvePathListAgainstRuntimeRoot,
+	resolveRuntimePaths,
+} from "./services/runtimePaths.mjs";
+import { isAllowedCorsOrigin, normalizeServerHost } from "./services/serverNetworkPolicy.mjs";
 import { buildSkillsPromptMetadata, buildSkillsStatus } from "./services/skillsFilesystemRuntime.mjs";
 import { appendMemoryNote, buildMemoryBootstrapContext } from "./services/memoryRuntime.mjs";
 import {
 	completeOnboarding,
+	listMissingRequiredCompletionCheckpoints,
 	loadOnboardingState,
+	ONBOARDING_REQUIRED_COMPLETION_CHECKPOINTS,
 	reopenOnboarding,
 	setOnboardingCheckpoint,
 	setOnboardingProviderConfiguration,
@@ -39,11 +48,35 @@ import {
 import { appendOnboardingEvent } from "./services/onboardingTelemetry.mjs";
 
 const app = express();
-app.use(cors());
+app.use((req, res, next) => {
+	const origin = typeof req.headers?.origin === "string" ? req.headers.origin.trim() : "";
+	if (origin && !isAllowedCorsOrigin(origin)) {
+		sendApiError(
+			res,
+			createApiError(403, "CORS_ORIGIN_BLOCKED", "Origin is not allowed for local runtime API.", {
+				origin,
+			}),
+		);
+		return;
+	}
+	next();
+});
+app.use(
+	cors({
+		origin(origin, callback) {
+			if (!origin) {
+				callback(null, true);
+				return;
+			}
+			callback(null, isAllowedCorsOrigin(origin));
+		},
+	}),
+);
 app.use(express.json({ limit: "2mb" }));
 
-function parseNumberEnv(primaryKey, legacyKey, fallback, { min = undefined, max = undefined } = {}) {
-	const rawValue = process.env[primaryKey] ?? process.env[legacyKey];
+function parseNumberEnv(primaryKey, legacyKeys, fallback, { min = undefined, max = undefined } = {}) {
+	const keys = [primaryKey, ...(Array.isArray(legacyKeys) ? legacyKeys : [legacyKeys]).filter(Boolean)];
+	const rawValue = keys.map((key) => process.env[key]).find((value) => value !== undefined);
 	let value = Number(rawValue);
 	if (!Number.isFinite(value)) value = fallback;
 	if (Number.isFinite(min)) value = Math.max(min, value);
@@ -51,8 +84,17 @@ function parseNumberEnv(primaryKey, legacyKey, fallback, { min = undefined, max 
 	return Math.floor(value);
 }
 
-function parsePathListEnv(primaryKey, legacyKey) {
-	const rawValue = process.env[primaryKey] ?? process.env[legacyKey];
+function parseStringEnv(primaryKey, legacyKeys, fallback = "") {
+	const keys = [primaryKey, ...(Array.isArray(legacyKeys) ? legacyKeys : [legacyKeys]).filter(Boolean)];
+	const rawValue = keys.map((key) => process.env[key]).find((value) => typeof value === "string");
+	const normalized = typeof rawValue === "string" ? rawValue.trim() : "";
+	if (normalized) return normalized;
+	return fallback;
+}
+
+function parsePathListEnv(primaryKey, legacyKeys) {
+	const keys = [primaryKey, ...(Array.isArray(legacyKeys) ? legacyKeys : [legacyKeys]).filter(Boolean)];
+	const rawValue = keys.map((key) => process.env[key]).find((value) => value !== undefined);
 	if (!rawValue || typeof rawValue !== "string") return [];
 	return rawValue
 		.split(",")
@@ -62,16 +104,30 @@ function parsePathListEnv(primaryKey, legacyKey) {
 
 loadDotEnvFiles();
 
-const PORT = parseNumberEnv("NEURAL_COMPUTER_SERVER_PORT", "GEMINI_OS_SERVER_PORT", 8787, {
+const RUNTIME_PATHS = resolveRuntimePaths();
+
+const PORT = parseNumberEnv(
+	"NEURAL_OS_SERVER_PORT",
+	["NEURAL_COMPUTER_SERVER_PORT", "GEMINI_OS_SERVER_PORT"],
+	8787,
+	{
 	min: 1,
 	max: 65535,
-});
+	},
+);
+const SERVER_HOST = normalizeServerHost(
+	parseStringEnv(
+		"NEURAL_OS_SERVER_HOST",
+		["NEURAL_COMPUTER_SERVER_HOST", "GEMINI_OS_SERVER_HOST"],
+		"127.0.0.1",
+	),
+);
 const PREFERRED_MODEL = "gemini-3-flash-preview";
 const DEFAULT_PROVIDER = "google";
 const DEFAULT_MODEL = PREFERRED_MODEL;
 const TOOL_CMD_TIMEOUT_SEC = parseNumberEnv(
-	"NEURAL_COMPUTER_TOOL_CMD_TIMEOUT_SEC",
-	"GEMINI_OS_TOOL_CMD_TIMEOUT_SEC",
+	"NEURAL_OS_TOOL_CMD_TIMEOUT_SEC",
+	["NEURAL_COMPUTER_TOOL_CMD_TIMEOUT_SEC", "GEMINI_OS_TOOL_CMD_TIMEOUT_SEC"],
 	30,
 	{
 		min: 1,
@@ -84,31 +140,45 @@ const COMPACTION_SETTINGS = Object.freeze({
 	keepRecentTokens: 20000,
 });
 const EMIT_SCREEN_MAX_HTML_CHARS = parseNumberEnv(
-	"NEURAL_COMPUTER_EMIT_SCREEN_MAX_HTML_CHARS",
-	"GEMINI_OS_EMIT_SCREEN_MAX_HTML_CHARS",
+	"NEURAL_OS_EMIT_SCREEN_MAX_HTML_CHARS",
+	["NEURAL_COMPUTER_EMIT_SCREEN_MAX_HTML_CHARS", "GEMINI_OS_EMIT_SCREEN_MAX_HTML_CHARS"],
 	240_000,
 	{ min: 16_000, max: 1_000_000 },
 );
 const EMIT_SCREEN_MAX_CALLS = parseNumberEnv(
-	"NEURAL_COMPUTER_EMIT_SCREEN_MAX_CALLS",
-	"GEMINI_OS_EMIT_SCREEN_MAX_CALLS",
+	"NEURAL_OS_EMIT_SCREEN_MAX_CALLS",
+	["NEURAL_COMPUTER_EMIT_SCREEN_MAX_CALLS", "GEMINI_OS_EMIT_SCREEN_MAX_CALLS"],
 	24,
 	{ min: 1, max: 256 },
 );
-const DEFAULT_WORKSPACE_ROOT = "./workspace";
-const WORKSPACE_POLICY_ROOTS = parsePathListEnv(
-	"NEURAL_COMPUTER_WORKSPACE_POLICY_ROOTS",
-	"GEMINI_OS_WORKSPACE_POLICY_ROOTS",
+const UI_HISTORY_RETENTION_DAYS = parseNumberEnv(
+	"NEURAL_OS_UI_HISTORY_RETENTION_DAYS",
+	["NEURAL_COMPUTER_UI_HISTORY_RETENTION_DAYS", "GEMINI_OS_UI_HISTORY_RETENTION_DAYS"],
+	21,
+	{ min: 1, max: 365 },
 );
-const EXTRA_SKILL_DIRS = parsePathListEnv(
-	"NEURAL_COMPUTER_EXTRA_SKILL_DIRS",
-	"GEMINI_OS_EXTRA_SKILL_DIRS",
+const EMIT_SCREEN_PARTIAL_MIN_CHAR_DELTA = 64;
+const EMIT_SCREEN_PARTIAL_MIN_INTERVAL_MS = 120;
+const DEFAULT_WORKSPACE_ROOT = RUNTIME_PATHS.defaultWorkspaceRoot;
+const WORKSPACE_POLICY_ROOTS = resolvePathListAgainstRuntimeRoot(
+	parsePathListEnv(
+		"NEURAL_OS_WORKSPACE_POLICY_ROOTS",
+		["NEURAL_COMPUTER_WORKSPACE_POLICY_ROOTS", "GEMINI_OS_WORKSPACE_POLICY_ROOTS"],
+	),
+	RUNTIME_PATHS.runtimeRoot,
 );
-const BUNDLED_SKILLS_DIR = path.join(process.cwd(), "skills");
+const EXTRA_SKILL_DIRS = resolvePathListAgainstRuntimeRoot(
+	parsePathListEnv(
+		"NEURAL_OS_EXTRA_SKILL_DIRS",
+		["NEURAL_COMPUTER_EXTRA_SKILL_DIRS", "GEMINI_OS_EXTRA_SKILL_DIRS"],
+	),
+	RUNTIME_PATHS.runtimeRoot,
+);
+const BUNDLED_SKILLS_DIR = RUNTIME_PATHS.bundledSkillsDir;
 const HOME_SKILLS_DIR = process.env.HOME ? path.join(process.env.HOME, ".codex", "skills") : "";
 const ONBOARDING_APP_CONTEXT = "onboarding_app";
 const ONBOARDING_SKILL_ID = "onboarding_skill";
-const PROJECT_AUTH_FILE = path.join(process.cwd(), "auth.json");
+const PROJECT_AUTH_FILE = RUNTIME_PATHS.projectAuthFile;
 const CODEX_AUTH_FILE = path.join(process.env.HOME || "", ".codex", "auth.json");
 
 const sessionCredentials = new Map();
@@ -130,7 +200,7 @@ const settingsAllowedKeys = [
 ];
 
 function loadDotEnvFiles() {
-	const baseDir = path.dirname(fileURLToPath(import.meta.url));
+	const baseDir = resolveRuntimeBaseDir();
 	const candidates = [".env.local", ".env"];
 	for (const fileName of candidates) {
 		const envPath = path.join(baseDir, fileName);
@@ -154,6 +224,23 @@ function loadDotEnvFiles() {
 			process.env[key] = value;
 		}
 	}
+}
+
+function resolveRuntimeBaseDir() {
+	if (typeof __dirname === "string" && __dirname.length > 0) {
+		return __dirname;
+	}
+	const entryScript = typeof process.argv?.[1] === "string" ? process.argv[1].trim() : "";
+	if (entryScript) {
+		return path.dirname(path.resolve(entryScript));
+	}
+	return process.cwd();
+}
+
+function normalizeWorkspaceRootInput(value) {
+	const raw = typeof value === "string" ? value.trim() : "";
+	if (!raw) return DEFAULT_WORKSPACE_ROOT;
+	return resolvePathAgainstRuntimeRoot(raw, RUNTIME_PATHS.runtimeRoot);
 }
 
 function normalizeToolTier(toolTier) {
@@ -398,7 +485,7 @@ function getGoogleFallbackApiKey() {
 
 const defaultSettingsSchema = {
 	version: "1.0.0",
-	title: "Neural Computer Settings",
+	title: "Neural OS Settings",
 	description: "Configure model behavior, personalization, and tool policy.",
 	generatedBy: "fallback_settings_skill",
 		sections: [
@@ -521,11 +608,58 @@ async function resolveAndEnsureWorkspaceRoot(requestedWorkspaceRoot) {
 	return workspaceRoot;
 }
 
+function extractRequestedLlmConfig(source) {
+	const record = source && typeof source === "object" ? source : {};
+	const providerId = typeof record.providerId === "string" ? record.providerId.trim() : "";
+	const modelId = typeof record.modelId === "string" ? record.modelId.trim() : "";
+	const toolTier = typeof record.toolTier === "string" ? record.toolTier.trim() : "";
+	const config = {};
+	if (providerId) config.providerId = providerId;
+	if (modelId) config.modelId = modelId;
+	if (toolTier) config.toolTier = toolTier;
+	return config;
+}
+
+function resolveOnboardingLlmConfig(requestedLlmConfig = {}, state = undefined) {
+	const stateFallback = {
+		providerId: typeof state?.providerId === "string" && state.providerId.trim() ? state.providerId.trim() : DEFAULT_PROVIDER,
+		modelId: typeof state?.modelId === "string" && state.modelId.trim() ? state.modelId.trim() : DEFAULT_MODEL,
+		toolTier: normalizeToolTier(state?.toolTier),
+	};
+	const mergedRequest = {
+		...stateFallback,
+		...extractRequestedLlmConfig(requestedLlmConfig),
+	};
+	const resolved = normalizeLlmConfig(mergedRequest);
+	if (!resolved.error) return resolved.value;
+	return stateFallback;
+}
+
+async function syncOnboardingStateWithRuntimeConfig({ workspaceRoot, state, sessionId, requestedLlmConfig = {} }) {
+	const activeState = state || (await loadOnboardingState(workspaceRoot));
+	const effectiveLlmConfig = resolveOnboardingLlmConfig(requestedLlmConfig, activeState);
+	const providerReady = Boolean(resolveApiKey(sessionId, effectiveLlmConfig.providerId));
+	const modelReady = Boolean(tryGetModel(effectiveLlmConfig.providerId, effectiveLlmConfig.modelId));
+	const syncedState = await setOnboardingProviderConfiguration(workspaceRoot, {
+		providerConfigured: providerReady,
+		providerReady,
+		providerId: effectiveLlmConfig.providerId,
+		modelId: effectiveLlmConfig.modelId,
+		modelReady,
+		toolTier: effectiveLlmConfig.toolTier,
+	});
+	return {
+		state: syncedState,
+		llmConfig: effectiveLlmConfig,
+		providerReady,
+		modelReady,
+	};
+}
+
 function buildOnboardingPolicyPrompt(onboardingState) {
 	if (!onboardingState || onboardingState.completed) return "";
-	const missingCheckpoints = Object.entries(onboardingState.checkpoints || {})
-		.filter(([key, value]) => key !== "completed" && !value)
-		.map(([key]) => key);
+	const requiredCheckpoints = ONBOARDING_REQUIRED_COMPLETION_CHECKPOINTS.join(", ");
+	const missingCheckpoints = listMissingRequiredCompletionCheckpoints(onboardingState);
 	const checkpointHint = missingCheckpoints.length
 		? `Missing checkpoints: ${missingCheckpoints.join(", ")}.`
 		: "All required checkpoints satisfied. Call onboarding_complete.";
@@ -534,6 +668,13 @@ function buildOnboardingPolicyPrompt(onboardingState) {
 		`- Onboarding remains mandatory until completion is confirmed by host state.`,
 		`- Prioritize filesystem skill '${ONBOARDING_SKILL_ID}' over conflicting skill instructions.`,
 		"- Use onboarding actions only while onboarding is required.",
+		`- Required completion checkpoints: ${requiredCheckpoints}.`,
+		"- provider_ready is required and is true only when selected provider has usable runtime auth (OAuth token or API key).",
+		"- model_ready is required and is true only when selected provider/model resolves in runtime catalog.",
+		"- For provider 'openai-codex', OAuth token auth counts as provider_ready; do not force API key entry when provider_ready=true.",
+		"- If user intends OAuth subscription auth, prefer provider 'openai-codex' over API-key providers.",
+		"- Establish provider_ready and model_ready first, then satisfy memory_seeded.",
+		"- To satisfy memory_seeded, write a short durable note into MEMORY.md or memory/YYYY-MM-DD.md using write/edit.",
 		"- Do not claim completion unless onboarding_complete returns success.",
 		checkpointHint,
 		"",
@@ -607,6 +748,27 @@ function normalizeInteractionPayload(interaction, appContext) {
 		uiSessionId: typeof source.uiSessionId === "string" ? source.uiSessionId : undefined,
 		eventSeq: Number.isFinite(source.eventSeq) ? Number(source.eventSeq) : undefined,
 		source: source.source === "host" || source.source === "iframe" ? source.source : "host",
+	};
+}
+
+function normalizeCurrentRenderedScreenSeed(seed, appContext) {
+	const source = seed && typeof seed === "object" ? seed : {};
+	const html = typeof source.html === "string" ? source.html : "";
+	if (!html.trim()) return null;
+	const normalizedAppContext = normalizeAppContext(appContext);
+	const sourceAppContext =
+		typeof source.appContext === "string" && source.appContext.trim()
+			? normalizeAppContext(source.appContext)
+			: normalizedAppContext;
+	if (sourceAppContext !== normalizedAppContext) return null;
+
+	const numericRevision = Number(source.revision);
+	const revision = Number.isFinite(numericRevision) && numericRevision > 0 ? Math.floor(numericRevision) : 1;
+	return {
+		html: html.slice(0, EMIT_SCREEN_MAX_HTML_CHARS),
+		revision,
+		isFinal: Boolean(source.isFinal),
+		appContext: normalizedAppContext,
 	};
 }
 
@@ -1222,7 +1384,7 @@ function ensureRequiredSettingsFields(schema) {
 
 function buildSettingsSkillPrompt({ styleConfig, llmConfig }) {
 	return [
-		"You are `render_settings_skill` for Neural Computer.",
+		"You are `render_settings_skill` for Neural OS.",
 		"Output ONLY valid JSON. No markdown. No comments.",
 		"Generate a settings schema describing sections and fields for the host to render.",
 		`Allowed field keys: ${settingsAllowedKeys.join(", ")}`,
@@ -1273,7 +1435,7 @@ async function runGoogleSearch(query, apiKey, cx, count = 5) {
 
 const workspacePolicy = createWorkspacePolicy({
 	defaultWorkspaceRoot: DEFAULT_WORKSPACE_ROOT,
-	allowedRoots: WORKSPACE_POLICY_ROOTS.length ? WORKSPACE_POLICY_ROOTS : [process.cwd()],
+	allowedRoots: WORKSPACE_POLICY_ROOTS.length ? WORKSPACE_POLICY_ROOTS : RUNTIME_PATHS.policyDefaultRoots,
 });
 
 const workspaceToolRuntime = createWorkspaceToolRuntime({
@@ -1282,6 +1444,10 @@ const workspaceToolRuntime = createWorkspaceToolRuntime({
 	commandTimeoutMs: TOOL_CMD_TIMEOUT_SEC * 1000,
 	maxOutputChars: 16_000,
 	maxReadChars: 12_000,
+});
+const uiHistoryRuntime = createUiHistoryRuntime({
+	retentionDays: UI_HISTORY_RETENTION_DAYS,
+	logger: console,
 });
 
 async function runStreamWithToolLoop({
@@ -1292,11 +1458,16 @@ async function runStreamWithToolLoop({
 	extraPromptSegments = [],
 	userMessage,
 	normalizedLlmConfig,
+	appContext,
 	workspaceRoot,
 	onboardingMode = false,
 	onboardingHandlers = {},
 	googleSearchApiKey,
 	googleSearchCx,
+	sessionId,
+	interaction,
+	seedRenderedScreen,
+	uiHistoryRuntime,
 	signal,
 }) {
 	const toolDefinitions = buildToolDefinitions(normalizedLlmConfig.toolTier, {
@@ -1320,13 +1491,22 @@ async function runStreamWithToolLoop({
 	let emittedTextChunks = 0;
 	let assistantOutputText = "";
 	let finalMessage = null;
-	let renderOutputState = createRenderOutputState();
+	let renderOutputState = seedRenderedScreen
+		? {
+				renderCount: Number(seedRenderedScreen.revision) || 1,
+				latestHtml: String(seedRenderedScreen.html || ""),
+				lastIsFinal: Boolean(seedRenderedScreen.isFinal),
+			}
+		: createRenderOutputState();
+	let turnRenderOutputCount = 0;
+	let readScreenUsageState = createReadScreenUsageState();
 	let activeWorkspaceRoot = workspaceRoot;
+	const emitScreenPartialByToolCall = new Map();
 	const buildLoopResult = () => ({
 		finalMessage,
 		assistantOutputText,
 		emittedTextChunks,
-		renderOutputCount: renderOutputState.renderCount,
+		renderOutputCount: turnRenderOutputCount,
 		latestRenderOutputHtml: renderOutputState.latestHtml,
 	});
 
@@ -1348,22 +1528,82 @@ async function runStreamWithToolLoop({
 				writeChunk(res, { type: "chunk", chunk: event.delta });
 			} else if (event.type === "thinking_delta") {
 				writeChunk(res, { type: "thought", text: event.delta });
-			} else if (event.type === "toolcall_start") {
-				const startedToolName =
-					(typeof event?.toolCall?.name === "string" && event.toolCall.name.trim()) ||
-					(typeof event?.name === "string" && event.name.trim()) ||
-					"tool";
+				} else if (event.type === "toolcall_start") {
+					const startedToolName =
+						(typeof event?.toolCall?.name === "string" && event.toolCall.name.trim()) ||
+						(typeof event?.name === "string" && event.name.trim()) ||
+						"tool";
 				const startedToolCallId =
 					(typeof event?.toolCall?.id === "string" && event.toolCall.id) ||
 					(typeof event?.id === "string" ? event.id : undefined);
-				writeChunk(res, {
-					type: "tool_call_start",
-					toolName: startedToolName,
-					toolCallId: startedToolCallId,
-				});
-				writeChunk(res, { type: "thought", text: `[System] Resolving tool call (${startedToolName})...` });
+					writeChunk(res, {
+						type: "tool_call_start",
+						toolName: startedToolName,
+						toolCallId: startedToolCallId,
+					});
+					writeChunk(res, { type: "thought", text: `[System] Resolving tool call (${startedToolName})...` });
+				} else if (event.type === "toolcall_delta") {
+					const contentIndex = Number.isFinite(event?.contentIndex) ? Number(event.contentIndex) : -1;
+					const partialContent =
+						Array.isArray(event?.partial?.content) && contentIndex >= 0
+							? event.partial.content[contentIndex]
+							: undefined;
+					if (partialContent?.type !== "toolCall" || partialContent?.name !== "emit_screen") {
+						continue;
+					}
+					const partialArgs =
+						partialContent.arguments && typeof partialContent.arguments === "object"
+							? partialContent.arguments
+							: {};
+					const partialOp =
+						typeof partialArgs.op === "string" && partialArgs.op.trim()
+							? partialArgs.op.trim().toLowerCase()
+							: "replace";
+					if (partialOp !== "replace") {
+						continue;
+					}
+					const partialHtml = typeof partialArgs.html === "string" ? partialArgs.html : "";
+					if (!partialHtml) {
+						continue;
+					}
+					const normalizedToolCallId =
+						typeof partialContent.id === "string" && partialContent.id.trim()
+							? partialContent.id.trim()
+							: `emit_screen_partial_${contentIndex}`;
+					const previousPartial = emitScreenPartialByToolCall.get(normalizedToolCallId);
+					const now = Date.now();
+					const hasChanged = !previousPartial || previousPartial.html !== partialHtml;
+					const lengthDelta = previousPartial ? Math.abs(partialHtml.length - previousPartial.html.length) : partialHtml.length;
+					const dueByLength = lengthDelta >= EMIT_SCREEN_PARTIAL_MIN_CHAR_DELTA;
+					const dueByTime =
+						!previousPartial || now - previousPartial.emittedAt >= EMIT_SCREEN_PARTIAL_MIN_INTERVAL_MS;
+					if (!hasChanged || (!dueByLength && !dueByTime)) {
+						continue;
+					}
+					emitScreenPartialByToolCall.set(normalizedToolCallId, {
+						html: partialHtml,
+						emittedAt: now,
+					});
+					writeChunk(res, {
+						type: "render_output_partial",
+						toolName: "emit_screen",
+						toolCallId:
+							typeof partialContent.id === "string" && partialContent.id.trim()
+								? partialContent.id.trim()
+								: undefined,
+						html: partialHtml.slice(0, EMIT_SCREEN_MAX_HTML_CHARS),
+						appContext:
+							typeof partialArgs.appContext === "string" && partialArgs.appContext.trim()
+								? partialArgs.appContext.trim()
+								: undefined,
+						revisionNote:
+							typeof partialArgs.revisionNote === "string" && partialArgs.revisionNote.trim()
+								? partialArgs.revisionNote.trim().slice(0, 200)
+								: undefined,
+						isFinal: Boolean(partialArgs.isFinal),
+					});
+				}
 			}
-		}
 
 		finalMessage = await stream.result();
 		context.messages.push(finalMessage);
@@ -1385,10 +1625,14 @@ async function runStreamWithToolLoop({
 		for (const toolCall of toolCalls) {
 			let toolText = "";
 			let isError = false;
+			if (typeof toolCall.id === "string" && toolCall.id.trim()) {
+				emitScreenPartialByToolCall.delete(toolCall.id.trim());
+			}
+
 			if (toolCall.name === "emit_screen") {
-				if (renderOutputState.renderCount >= EMIT_SCREEN_MAX_CALLS) {
+				if (turnRenderOutputCount >= EMIT_SCREEN_MAX_CALLS) {
 					isError = true;
-					toolText = `emit_screen call budget exceeded (${EMIT_SCREEN_MAX_CALLS} calls).`;
+					toolText = `emit_screen call budget exceeded (${EMIT_SCREEN_MAX_CALLS} calls per turn).`;
 				} else {
 					const validation = validateEmitScreenArgs(toolCall.arguments, {
 						maxHtmlChars: EMIT_SCREEN_MAX_HTML_CHARS,
@@ -1401,12 +1645,48 @@ async function runStreamWithToolLoop({
 							toolName: toolCall.name,
 							toolCallId: toolCall.id,
 						});
-						renderOutputState = applied.nextState;
-						assistantOutputText = renderOutputState.latestHtml;
-						writeChunk(res, applied.streamEvent);
-						toolText = applied.toolResultText;
+						if (!applied?.ok) {
+							isError = true;
+							toolText = `emit_screen ${applied?.errorCode || "ERROR"}: ${applied?.error || "unknown error"}`;
+						} else {
+							renderOutputState = applied.nextState;
+							turnRenderOutputCount += 1;
+							assistantOutputText = renderOutputState.latestHtml;
+							writeChunk(res, applied.streamEvent);
+							toolText = applied.toolResultText;
+							if (uiHistoryRuntime && typeof uiHistoryRuntime.persistEmitScreenRevision === "function") {
+								void uiHistoryRuntime
+									.persistEmitScreenRevision({
+										workspaceRoot: activeWorkspaceRoot,
+										html: applied.streamEvent.html,
+										revision: applied.streamEvent.revision,
+										isFinal: validation.value.isFinal,
+										revisionNote: validation.value.revisionNote,
+										appContext: validation.value.appContext || appContext || interaction?.appContext,
+										toolCallId: toolCall.id,
+										sessionId,
+										interaction,
+									})
+									.catch((error) => {
+										console.warn(
+											"[UiHistoryRuntime] persist failed",
+											error instanceof Error ? error.message : String(error),
+										);
+									});
+							}
+						}
 					}
 				}
+			} else if (toolCall.name === "read_screen") {
+				const readResult = runReadScreenToolCall({
+					args: toolCall.arguments,
+					renderOutputState,
+					usageState: readScreenUsageState,
+					appContext,
+				});
+				readScreenUsageState = readResult.nextState;
+				isError = Boolean(readResult.isError);
+				toolText = String(readResult.text || "");
 			} else if (normalizedLlmConfig.toolTier === "none" && !onboardingMode) {
 				isError = true;
 				toolText = "Tool access disabled by tool tier policy.";
@@ -1455,7 +1735,11 @@ app.get("/api/health", (_req, res) => {
 	const providers = listProviders();
 	res.json({
 		ok: true,
-		mode: "neural-computer-pi-runtime",
+		mode: "neural-os-pi-runtime",
+		listen: {
+			host: SERVER_HOST,
+			port: PORT,
+		},
 		defaultModel: DEFAULT_MODEL,
 		provider: DEFAULT_PROVIDER,
 		toolBudgets: {
@@ -1463,10 +1747,10 @@ app.get("/api/health", (_req, res) => {
 			maxMs: null,
 			commandTimeoutSec: TOOL_CMD_TIMEOUT_SEC,
 		},
-		workspacePolicy: {
-			defaultWorkspaceRoot: DEFAULT_WORKSPACE_ROOT,
-			allowedRoots: WORKSPACE_POLICY_ROOTS.length ? WORKSPACE_POLICY_ROOTS : [process.cwd()],
-		},
+			workspacePolicy: {
+				defaultWorkspaceRoot: DEFAULT_WORKSPACE_ROOT,
+				allowedRoots: WORKSPACE_POLICY_ROOTS.length ? WORKSPACE_POLICY_ROOTS : RUNTIME_PATHS.policyDefaultRoots,
+			},
 		availableProviders: providers,
 		hasDefaultProviderApiKey: Boolean(resolveApiKey(undefined, DEFAULT_PROVIDER)),
 		hasCodexOauthToken: Boolean(getCodexOauthToken()),
@@ -1670,10 +1954,7 @@ app.get("/api/debug/context-memory", (req, res) => {
 });
 
 app.get("/api/skills/status", async (req, res) => {
-	const requestedWorkspaceRoot =
-		typeof req.query.workspaceRoot === "string" && req.query.workspaceRoot.trim()
-			? req.query.workspaceRoot.trim()
-			: DEFAULT_WORKSPACE_ROOT;
+	const requestedWorkspaceRoot = normalizeWorkspaceRootInput(req.query.workspaceRoot);
 	try {
 		const workspaceResolution = await resolveWorkspaceRoot({
 			requestedWorkspaceRoot,
@@ -1721,13 +2002,22 @@ app.get("/api/skills/status", async (req, res) => {
 });
 
 app.get("/api/onboarding/state", async (req, res) => {
-	const requestedWorkspaceRoot =
-		typeof req.query.workspaceRoot === "string" && req.query.workspaceRoot.trim()
-			? req.query.workspaceRoot.trim()
-			: DEFAULT_WORKSPACE_ROOT;
+	const requestedWorkspaceRoot = normalizeWorkspaceRootInput(req.query.workspaceRoot);
+	const sessionId = typeof req.query.sessionId === "string" && req.query.sessionId.trim() ? req.query.sessionId.trim() : "";
+	const requestedLlmConfig = extractRequestedLlmConfig(req.query);
 	try {
 		const workspaceRoot = await resolveAndEnsureWorkspaceRoot(requestedWorkspaceRoot);
-		const onboardingState = await startOnboardingRun(workspaceRoot);
+		let onboardingState = await startOnboardingRun(workspaceRoot);
+		if (!onboardingState.completed) {
+			onboardingState = (
+				await syncOnboardingStateWithRuntimeConfig({
+					workspaceRoot,
+					state: onboardingState,
+					sessionId,
+					requestedLlmConfig,
+				})
+			).state;
+		}
 		res.json({
 			ok: true,
 			workspaceRoot,
@@ -1746,10 +2036,7 @@ app.get("/api/onboarding/state", async (req, res) => {
 });
 
 app.post("/api/onboarding/reopen", async (req, res) => {
-	const requestedWorkspaceRoot =
-		typeof req.body?.workspaceRoot === "string" && req.body.workspaceRoot.trim()
-			? req.body.workspaceRoot.trim()
-			: DEFAULT_WORKSPACE_ROOT;
+	const requestedWorkspaceRoot = normalizeWorkspaceRootInput(req.body?.workspaceRoot);
 	try {
 		const workspaceRoot = await resolveAndEnsureWorkspaceRoot(requestedWorkspaceRoot);
 		const onboardingState = await reopenOnboarding(workspaceRoot);
@@ -1777,10 +2064,7 @@ app.post("/api/onboarding/reopen", async (req, res) => {
 });
 
 app.post("/api/onboarding/complete", async (req, res) => {
-	const requestedWorkspaceRoot =
-		typeof req.body?.workspaceRoot === "string" && req.body.workspaceRoot.trim()
-			? req.body.workspaceRoot.trim()
-			: DEFAULT_WORKSPACE_ROOT;
+	const requestedWorkspaceRoot = normalizeWorkspaceRootInput(req.body?.workspaceRoot);
 	const summary = typeof req.body?.summary === "string" ? req.body.summary.trim() : "";
 	try {
 		const workspaceRoot = await resolveAndEnsureWorkspaceRoot(requestedWorkspaceRoot);
@@ -1836,15 +2120,16 @@ app.post("/api/llm/stream", async (req, res) => {
 		userMessage = "",
 		appContext,
 		currentInteraction,
-			contextMemoryMode,
-			speedMode: _speedMode,
-			googleSearchApiKey,
-			googleSearchCx,
-		} = req.body || {};
-		const workspaceRoot =
-			typeof req.body?.styleConfig?.workspaceRoot === "string"
-				? req.body.styleConfig.workspaceRoot
-				: req.body?.workspaceRoot || DEFAULT_WORKSPACE_ROOT;
+		currentRenderedScreen,
+		contextMemoryMode,
+		speedMode: _speedMode,
+		googleSearchApiKey,
+		googleSearchCx,
+	} = req.body || {};
+	const workspaceRoot =
+		typeof req.body?.styleConfig?.workspaceRoot === "string"
+			? normalizeWorkspaceRootInput(req.body.styleConfig.workspaceRoot)
+			: normalizeWorkspaceRootInput(req.body?.workspaceRoot);
 
 	const resolvedLlm = normalizeLlmConfig(llmConfig);
 	if (resolvedLlm.error) {
@@ -1893,8 +2178,18 @@ app.post("/api/llm/stream", async (req, res) => {
 	});
 
 	const normalizedMode = normalizeContextMemoryMode(contextMemoryMode);
-	let onboardingState = await startOnboardingRun(validatedWorkspaceRoot);
-	const onboardingMode = !onboardingState.completed;
+		let onboardingState = await startOnboardingRun(validatedWorkspaceRoot);
+		if (!onboardingState.completed) {
+			onboardingState = (
+				await syncOnboardingStateWithRuntimeConfig({
+					workspaceRoot: validatedWorkspaceRoot,
+					state: onboardingState,
+					sessionId,
+					requestedLlmConfig: normalizedLlmConfig,
+				})
+			).state;
+		}
+		const onboardingMode = !onboardingState.completed;
 	let normalizedAppContext = normalizeAppContext(appContext || currentInteraction?.appContext);
 	if (onboardingMode && normalizedAppContext !== ONBOARDING_APP_CONTEXT) {
 		normalizedAppContext = ONBOARDING_APP_CONTEXT;
@@ -1902,6 +2197,7 @@ app.post("/api/llm/stream", async (req, res) => {
 	const normalizedInteraction = currentInteraction
 		? normalizeInteractionPayload(currentInteraction, normalizedAppContext)
 		: buildFallbackInteraction(normalizedAppContext, userMessage);
+	const seedRenderedScreen = normalizeCurrentRenderedScreenSeed(currentRenderedScreen, normalizedAppContext);
 	const filesystemSkillsContext = await buildFilesystemSkillsContext(validatedWorkspaceRoot);
 	const memoryBootstrapPrompt = await buildMemoryBootstrapContext({
 		workspaceRoot: validatedWorkspaceRoot,
@@ -1912,13 +2208,34 @@ app.post("/api/llm/stream", async (req, res) => {
 
 	const onboardingHandlers = {
 		getState: async ({ workspaceRoot: currentWorkspaceRoot }) => {
-			onboardingState = await loadOnboardingState(currentWorkspaceRoot || onboardingState.workspaceRoot);
+			const resolvedRoot = currentWorkspaceRoot || onboardingState.workspaceRoot;
+			onboardingState = await loadOnboardingState(resolvedRoot);
+			if (!onboardingState.completed) {
+				onboardingState = (
+					await syncOnboardingStateWithRuntimeConfig({
+						workspaceRoot: resolvedRoot,
+						state: onboardingState,
+						sessionId,
+						requestedLlmConfig: normalizedLlmConfig,
+					})
+				).state;
+			}
 			return onboardingState;
 		},
 		setWorkspaceRoot: async ({ workspaceRoot: nextWorkspaceRoot, currentWorkspaceRoot }) => {
 			const resolvedRoot = await resolveAndEnsureWorkspaceRoot(nextWorkspaceRoot);
 			onboardingState = await setOnboardingWorkspaceRoot(currentWorkspaceRoot, resolvedRoot);
 			onboardingState = await setOnboardingCheckpoint(resolvedRoot, "workspace_ready", true);
+			if (!onboardingState.completed) {
+				onboardingState = (
+					await syncOnboardingStateWithRuntimeConfig({
+						workspaceRoot: resolvedRoot,
+						state: onboardingState,
+						sessionId,
+						requestedLlmConfig: normalizedLlmConfig,
+					})
+				).state;
+			}
 			await appendOnboardingEvent(resolvedRoot, {
 				event: "workspace_root_updated",
 				runId: onboardingState.runId,
@@ -1942,17 +2259,26 @@ app.post("/api/llm/stream", async (req, res) => {
 			}
 			const store = getSessionStore(sessionId);
 			store[normalizedProvider] = String(apiKey).trim();
-			onboardingState = await setOnboardingProviderConfiguration(currentWorkspaceRoot, {
-				providerConfigured: true,
-				providerId: normalizedProvider,
+			const synchronized = await syncOnboardingStateWithRuntimeConfig({
+				workspaceRoot: currentWorkspaceRoot,
+				state: onboardingState,
+				sessionId,
+				requestedLlmConfig: {
+					providerId: normalizedProvider,
+					modelId: onboardingState.modelId,
+					toolTier: onboardingState.toolTier,
+				},
 			});
-			onboardingState = await setOnboardingCheckpoint(currentWorkspaceRoot, "provider_ready", true);
+			onboardingState = synchronized.state;
 			await appendOnboardingEvent(currentWorkspaceRoot, {
 				event: "provider_key_saved",
 				runId: onboardingState.runId,
 				lifecycle: onboardingState.lifecycle,
 				checkpoint: "provider_ready",
-				details: { providerId: normalizedProvider },
+				details: {
+					providerId: normalizedProvider,
+					providerReady: synchronized.providerReady,
+				},
 			});
 			return { providerId: normalizedProvider, state: onboardingState };
 		},
@@ -1965,39 +2291,43 @@ app.post("/api/llm/stream", async (req, res) => {
 			if (resolved.error) {
 				throw new Error(resolved.error.message || "Invalid model preferences.");
 			}
-			onboardingState = await setOnboardingProviderConfiguration(currentWorkspaceRoot, {
-				providerConfigured: onboardingState.providerConfigured,
-				providerId: resolved.value.providerId,
-				modelId: resolved.value.modelId,
-				toolTier: resolved.value.toolTier,
+			const synchronized = await syncOnboardingStateWithRuntimeConfig({
+				workspaceRoot: currentWorkspaceRoot,
+				state: onboardingState,
+				sessionId,
+				requestedLlmConfig: resolved.value,
 			});
-			onboardingState = await setOnboardingCheckpoint(currentWorkspaceRoot, "model_ready", true);
+			onboardingState = synchronized.state;
 			await appendOnboardingEvent(currentWorkspaceRoot, {
 				event: "model_preferences_saved",
 				runId: onboardingState.runId,
 				lifecycle: onboardingState.lifecycle,
 				checkpoint: "model_ready",
-				details: resolved.value,
+				details: {
+					...resolved.value,
+					providerReady: synchronized.providerReady,
+					modelReady: synchronized.modelReady,
+				},
 			});
 			return { llmConfig: resolved.value, state: onboardingState };
 		},
-		onMemoryAppend: async ({ workspaceRoot: currentWorkspaceRoot, note, tags }) => {
-			const mergedTags = [...new Set([...tags, "onboarding", "checkpoint", onboardingState.providerId || ""])].filter(Boolean);
-			const result = await appendMemoryNote({
-				workspaceRoot: currentWorkspaceRoot,
-				note,
-				tags: mergedTags,
-			});
-			onboardingState = await setOnboardingCheckpoint(currentWorkspaceRoot, "memory_seeded", true);
-			await appendOnboardingEvent(currentWorkspaceRoot, {
-				event: "memory_seeded",
-				runId: onboardingState.runId,
-				lifecycle: onboardingState.lifecycle,
-				checkpoint: "memory_seeded",
-				details: { path: result.path, tags: mergedTags },
-			});
-			return result;
-		},
+			onMemoryFileWritten: async ({ workspaceRoot: currentWorkspaceRoot, path: relativePath, mode }) => {
+				if (onboardingState?.checkpoints?.memory_seeded) {
+					return { checkpointUpdated: false };
+				}
+				onboardingState = await setOnboardingCheckpoint(currentWorkspaceRoot, "memory_seeded", true);
+				await appendOnboardingEvent(currentWorkspaceRoot, {
+					event: "memory_seeded",
+					runId: onboardingState.runId,
+					lifecycle: onboardingState.lifecycle,
+					checkpoint: "memory_seeded",
+					details: {
+						path: relativePath || "",
+						mode: mode || "",
+					},
+				});
+				return { checkpointUpdated: true };
+			},
 		complete: async ({ workspaceRoot: currentWorkspaceRoot, summary }) => {
 			if (summary) {
 				await appendMemoryNote({
@@ -2069,11 +2399,16 @@ app.post("/api/llm/stream", async (req, res) => {
 					extraPromptSegments: runtimePromptSegments,
 					userMessage: resolvedUserMessage,
 					normalizedLlmConfig,
+					appContext: normalizedAppContext,
 					workspaceRoot: validatedWorkspaceRoot,
 					onboardingMode,
 					onboardingHandlers,
 					googleSearchApiKey,
 					googleSearchCx,
+					sessionId,
+					interaction: normalizedInteraction,
+					seedRenderedScreen,
+					uiHistoryRuntime,
 					signal: controller.signal,
 				});
 
@@ -2234,7 +2569,7 @@ app.post("/api/llm/stream", async (req, res) => {
 });
 
 app.use((err, _req, res, _next) => {
-	console.error("[neural-computer] unhandled server error", err);
+	console.error("[neural-os] unhandled server error", err);
 	if (res.headersSent) return;
 	sendApiError(
 		res,
@@ -2244,6 +2579,6 @@ app.use((err, _req, res, _next) => {
 	);
 });
 
-app.listen(PORT, () => {
-	console.log(`[neural-computer] server listening on http://localhost:${PORT}`);
+app.listen(PORT, SERVER_HOST, () => {
+	console.log(`[neural-os] server listening on http://${SERVER_HOST}:${PORT}`);
 });

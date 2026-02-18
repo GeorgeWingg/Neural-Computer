@@ -1,11 +1,11 @@
-# OpenClaw vs Neural Computer: Self-Improvement and Skills Difference Report
+# OpenClaw vs Neural OS: Self-Improvement and Skills Difference Report
 
 Date: 2026-02-14
 
 ## Scope
 This report compares:
-1. How self-improvement currently works in this Neural Computer repo.
-2. How skills currently work in this Neural Computer repo.
+1. How self-improvement currently works in this Neural OS repo.
+2. How skills currently work in this Neural OS repo.
 3. Equivalent mechanisms in OpenClaw.
 4. Practical architectural differences and migration implications.
 
@@ -14,18 +14,18 @@ Evidence sources are code and docs from:
 - `/Users/juno/workspace/openclaw`
 
 ## Executive Summary
-Neural Computer currently uses an internal `AppSkill` scoring pipeline that behaves like prompt policy tuning, while OpenClaw uses filesystem `SKILL.md` packages with runtime discovery and on-demand loading.
+Neural OS currently uses an internal `AppSkill` scoring pipeline that behaves like prompt policy tuning, while OpenClaw uses filesystem `SKILL.md` packages with runtime discovery and on-demand loading.
 
-Neural Computer self-improvement is primarily a local telemetry loop (`episodes`, `generations`, `feedback`) that updates skill scores/status in `localStorage`. OpenClaw self-improvement is primarily memory-and-retrieval based: write durable memory to workspace files, index it, and retrieve it in later runs.
+Neural OS self-improvement is primarily a local telemetry loop (`episodes`, `generations`, `feedback`) that updates skill scores/status in `localStorage`. OpenClaw self-improvement is primarily memory-and-retrieval based: write durable memory to workspace files, index it, and retrieve it in later runs.
 
 Core difference:
-- Neural Computer optimizes prompt policy objects.
+- Neural OS optimizes prompt policy objects.
 - OpenClaw compounds persistent memory and file-backed skills.
 
 ## Side-by-Side Differences
 
 ### 1) Skill Primitive
-Neural Computer:
+Neural OS:
 - Skills are seeded in code as `AppSkill[]` objects, not filesystem packages.
 - Reference: `services/skillRegistry.ts:10`.
 
@@ -38,7 +38,7 @@ Difference:
 - OpenClaw skill unit is a file-backed capability package.
 
 ### 2) Skill Discovery and Source of Truth
-Neural Computer:
+Neural OS:
 - Registry loads from `localStorage`, defaulting to hardcoded seeds.
 - References: `services/skillRegistry.ts:83`, `services/skillRegistry.ts:95`.
 
@@ -51,7 +51,7 @@ Difference:
 - OpenClaw skill source is directory-scanned and precedence-controlled.
 
 ### 3) How Skills Enter Model Context
-Neural Computer:
+Neural OS:
 - Injects selected skill instructions directly into `systemPrompt` as full inline text.
 - References: `services/geminiService.ts:263`, `services/geminiService.ts:273`.
 
@@ -64,7 +64,7 @@ Difference:
 - OpenClaw uses lazy, tool-mediated skill loading.
 
 ### 4) Skill Runtime Lifecycle and Refresh
-Neural Computer:
+Neural OS:
 - Uses status lifecycle (`shadow/candidate/canary/active/disabled`) and score/confidence updates from outcomes.
 - References: `services/selfImprovementCoordinator.ts:119`, `services/skillRegistry.ts:137`.
 - Runtime retrieval includes only `active` and sampled `canary`.
@@ -79,7 +79,7 @@ Difference:
 - OpenClaw operationalizes filesystem skill lifecycle and eligibility at load/run time.
 
 ### 5) Self-Improvement Mechanism
-Neural Computer:
+Neural OS:
 - On each generation:
   - select skills,
   - generate,
@@ -99,7 +99,7 @@ Difference:
 - OpenClaw loop grows durable memory and recall.
 
 ### 6) Memory and Learning from Experience
-Neural Computer:
+Neural OS:
 - Stores episodes/generations/feedback in browser `localStorage` with caps.
 - References: `services/interactionTelemetry.ts:8`, `services/generationTelemetry.ts:8`, `services/feedbackTelemetry.ts:8`.
 - No first-class semantic memory store with retrieval tools.
@@ -116,7 +116,7 @@ Difference:
 - OpenClaw centers learning on persistent memory + retrieval.
 
 ### 7) Feedback Model
-Neural Computer:
+Neural OS:
 - Feedback pill is categorical (`good/okay/bad`) plus fixed tags.
 - Reference: `components/FeedbackPill.tsx:20`.
 - Feedback updates episode/generation and logs feedback event.
@@ -131,7 +131,7 @@ Difference:
 - OpenClaw has stronger persistence path but weaker direct UI rating channel.
 
 ### 8) Insights and Observability
-Neural Computer:
+Neural OS:
 - Insights panel aggregates local stats for overview, skills, generations, experiments.
 - References: `components/InsightsPanel.tsx:31`, `services/insights.ts:47`.
 
@@ -144,7 +144,7 @@ Difference:
 - OpenClaw observability is system-level and tool/runtime-centric.
 
 ### 9) Temporal/Datefulness
-Neural Computer:
+Neural OS:
 - Timestamps are recorded in telemetry events but there is no explicit temporal memory policy.
 - References: `services/feedbackTelemetry.ts:42`, `services/generationTelemetry.ts:124`.
 
@@ -160,17 +160,17 @@ Difference:
 
 ## Practical Implications for This Repo
 
-### What Neural Computer Has That OpenClaw Does Not (in this scope)
+### What Neural OS Has That OpenClaw Does Not (in this scope)
 1. Immediate UI-native skill scoring and transition experiments integrated with rendering quality signals.
 2. A built-in feedback UX surface tied directly into the runtime cycle.
 
-### What OpenClaw Has That Neural Computer Does Not (in this scope)
+### What OpenClaw Has That Neural OS Does Not (in this scope)
 1. Real filesystem skills (`SKILL.md`) with discovery, precedence, and on-demand read semantics.
 2. Durable memory substrate with retrieval tools and indexing watchers.
 3. Pre-compaction memory capture loop for preserving long-term learning.
 4. Stronger temporal/datefulness in memory organization and runtime policy.
 
-## High-Impact Gaps (Neural Computer vs OpenClaw)
+## High-Impact Gaps (Neural OS vs OpenClaw)
 1. Skill architecture mismatch: policy records are being called skills, but they are not Pi/OpenClaw style skills.
 2. Missing filesystem skill runtime: no workspace-backed skill discovery and no on-demand `SKILL.md` loading.
 3. Missing durable memory loop: no first-class memory store + retrieval tool path.

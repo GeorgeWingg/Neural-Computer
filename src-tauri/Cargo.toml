@@ -1,10 +1,10 @@
 [package]
 name = "app"
 version = "0.1.0"
-description = "A Tauri App"
+description = "Neural OS desktop application shell"
 authors = ["you"]
-license = ""
-repository = ""
+license = "Apache-2.0"
+repository = "https://github.com/GeorgeWingg/gemini-os-2"
 edition = "2021"
 rust-version = "1.77.2"
 

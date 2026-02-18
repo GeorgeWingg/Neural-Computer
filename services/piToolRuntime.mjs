@@ -9,7 +9,7 @@ import {
 	resolveWorkspaceRoot,
 	isPathInsideWorkspace,
 } from "./workspaceSandbox.mjs";
-import { appendMemoryNote, readMemoryFile, searchMemory } from "./memoryRuntime.mjs";
+import { readMemoryFile, searchMemory } from "./memoryRuntime.mjs";
 import { looksSensitiveSecret } from "./secretGuard.mjs";
 
 const DEFAULT_MAX_TOOL_OUTPUT_CHARS = 16_000;
@@ -20,7 +20,8 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 const BASH_POLICY_ERROR_PREFIX = "WORKSPACE_POLICY_ERROR:";
 const PI_TOOL_PROMPT_DESCRIPTIONS = Object.freeze({
-	emit_screen: "Publish user-visible window HTML to the host UI",
+	emit_screen: "Publish user-visible window updates (full replace or revision-checked patch ops)",
+	read_screen: "Read current rendered screen state in bounded form",
 	onboarding_get_state: "Read onboarding lifecycle and checkpoint state",
 	onboarding_set_workspace_root: "Set workspace root for onboarding runtime",
 	save_provider_key: "Save provider API key to secure session storage",
@@ -35,17 +36,19 @@ const PI_TOOL_PROMPT_DESCRIPTIONS = Object.freeze({
 	ls: "List directory contents",
 	memory_search: "Search durable workspace memory files",
 	memory_get: "Read a durable workspace memory file",
-	memory_append: "Append durable memory notes for future runs",
 });
 
 const ONBOARDING_ALLOWED_TOOLS = new Set([
 	"emit_screen",
+	"read_screen",
 	"onboarding_get_state",
 	"onboarding_set_workspace_root",
 	"save_provider_key",
 	"onboarding_set_model_preferences",
+	"read",
+	"write",
+	"edit",
 	"onboarding_complete",
-	"memory_append",
 ]);
 
 function toInt(value, fallback) {
@@ -699,15 +702,6 @@ const memoryGetToolDefinition = {
 	}),
 };
 
-const memoryAppendToolDefinition = {
-	name: "memory_append",
-	description: "Append a durable memory note into today's memory file.",
-	parameters: Type.Object({
-		note: Type.String({ description: "Memory note text to append." }),
-		tags: Type.Optional(Type.Array(Type.String({ description: "Tag label." }))),
-	}),
-};
-
 const onboardingGetStateToolDefinition = {
 	name: "onboarding_get_state",
 	description: "Get onboarding lifecycle state and checkpoint progress.",
@@ -752,12 +746,57 @@ const onboardingCompleteToolDefinition = {
 const emitScreenToolDefinition = {
 	name: "emit_screen",
 	description:
-		"Publish a full HTML snapshot for the current window. This is the canonical user-visible output channel.",
+		"Publish user-visible output for the current window. Supports full replace and patch operations against data-ui-id targets.",
 	parameters: Type.Object({
-		html: Type.String({ description: "Full HTML snapshot for the current window content area." }),
+		op: Type.Optional(
+			Type.String({
+				description:
+					"Operation: replace (default) | append_child | prepend_child | replace_node | remove_node | set_text | set_attr.",
+			}),
+		),
+		html: Type.Optional(Type.String({ description: "Required for op=replace. Full HTML snapshot for the window content area." })),
+		baseRevision: Type.Optional(
+			Type.Number({
+				description: "Required for patch ops. Use read_screen.meta.revision.",
+				minimum: 1,
+			}),
+		),
+		targetId: Type.Optional(
+			Type.String({
+				description: "Required for patch ops. Matches the target element's data-ui-id value.",
+			}),
+		),
+		htmlFragment: Type.Optional(
+			Type.String({
+				description: "Required for append_child, prepend_child, and replace_node.",
+			}),
+		),
+		text: Type.Optional(Type.String({ description: "Required for set_text." })),
+		attrName: Type.Optional(Type.String({ description: "Required for set_attr." })),
+		attrValue: Type.Optional(Type.String({ description: "Required for set_attr." })),
 		appContext: Type.Optional(Type.String({ description: "Optional app context id for diagnostics." })),
 		revisionNote: Type.Optional(Type.String({ description: "Optional short note describing this revision." })),
 		isFinal: Type.Optional(Type.Boolean({ description: "True when this is the intended final render for this turn." })),
+	}),
+};
+
+const readScreenToolDefinition = {
+	name: "read_screen",
+	description: "Read current rendered screen state in bounded form for state-aware edits.",
+	parameters: Type.Object({
+		mode: Type.Optional(Type.String({ description: "Read mode: meta | outline | snippet." })),
+		maxChars: Type.Optional(
+			Type.Number({
+				description: "Maximum snippet length for snippet mode.",
+				minimum: 1,
+				maximum: 4000,
+			}),
+		),
+		recovery: Type.Optional(
+			Type.Boolean({
+				description: "Set true only for a second recovery read in the same turn.",
+			}),
+		),
 	}),
 };
 
@@ -766,32 +805,35 @@ export function buildToolDefinitions(toolTier, searchConfig = {}) {
 	if (onboardingRequired) {
 		return [
 			emitScreenToolDefinition,
+			readScreenToolDefinition,
 			onboardingGetStateToolDefinition,
 			onboardingSetWorkspaceRootToolDefinition,
 			onboardingSaveProviderKeyToolDefinition,
 			onboardingSetModelPreferencesToolDefinition,
-			memoryAppendToolDefinition,
+			readToolDefinition,
+			writeToolDefinition,
+			editToolDefinition,
 			onboardingCompleteToolDefinition,
 		];
 	}
 
 	if (toolTier === "none") {
-		return [emitScreenToolDefinition];
+		return [emitScreenToolDefinition, readScreenToolDefinition];
 	}
 	const includeGoogleSearch = searchConfig.includeGoogleSearch !== false;
 	const toolDefinitions = [
 		emitScreenToolDefinition,
+		readScreenToolDefinition,
 		readToolDefinition,
 		writeToolDefinition,
 		editToolDefinition,
 		grepToolDefinition,
 		findToolDefinition,
 		lsToolDefinition,
-		bashToolDefinition,
-		memorySearchToolDefinition,
-		memoryGetToolDefinition,
-		memoryAppendToolDefinition,
-	];
+			bashToolDefinition,
+			memorySearchToolDefinition,
+			memoryGetToolDefinition,
+		];
 	if (includeGoogleSearch) {
 		toolDefinitions.push(searchConfig.googleSearchToolDefinition || googleSearchToolDefinition);
 	}
@@ -821,12 +863,33 @@ export function buildPiToolGuidancePrompt(toolDefinitions = []) {
 	const hasLs = piTools.includes("ls");
 	const hasRead = piTools.includes("read");
 	const hasEmitScreen = piTools.includes("emit_screen");
+	const hasReadScreen = piTools.includes("read_screen");
 	const hasMemorySearch = piTools.includes("memory_search");
 	const hasOnboardingState = piTools.includes("onboarding_get_state");
 	const hasOnboardingComplete = piTools.includes("onboarding_complete");
 
 	if (hasEmitScreen) {
 		guidelinesList.push("Use emit_screen to publish all user-visible UI output; do not rely on plain text output.");
+		guidelinesList.push(
+			"Prefer emit_screen patch ops for localized updates (append_child, prepend_child, replace_node, remove_node, set_text, set_attr).",
+		);
+		guidelinesList.push(
+			"For patch ops, set baseRevision to read_screen.meta.revision and targetId to a stable data-ui-id anchor.",
+		);
+		guidelinesList.push("Use emit_screen op=replace with full html for first render, major layout changes, or patch recovery.");
+	}
+	if (hasReadScreen) {
+		guidelinesList.push(
+			"When a turn starts from an interaction on an already-rendered screen, call read_screen before non-trivial UI edits.",
+		);
+		guidelinesList.push("When reading screen state, use the lightest read mode first (meta, then outline, then snippet).");
+		guidelinesList.push("Use at most one read_screen call per turn unless explicitly recovering from stale state.");
+		guidelinesList.push("After read_screen, publish updated user-visible output with emit_screen in the same turn unless blocked.");
+	}
+	if (hasRead && hasEmitScreen) {
+		guidelinesList.push(
+			"Screen history may exist at .neural/ui-history/<YYYY-MM-DD>/. Read it only when continuity is unclear; prioritize emitting useful UI now.",
+		);
 	}
 
 	if (hasBash && !hasGrep && !hasFind && !hasLs) {
@@ -1166,57 +1229,36 @@ export async function executeToolCall(call, context) {
 			};
 		}
 
-		if (toolName === "memory_append") {
-			const note = normalizeTextValue(toolArgs.note).trim();
-			if (!note) {
-				return { isError: true, text: "memory_append requires a non-empty note." };
-			}
-			const tags = Array.isArray(toolArgs.tags)
-				? toolArgs.tags.map((tag) => normalizeTextValue(tag).trim()).filter(Boolean)
-				: [];
-			const result =
-				typeof onboardingHandlers.onMemoryAppend === "function"
-					? await onboardingHandlers.onMemoryAppend({
-							workspaceRoot: canonicalWorkspaceRoot,
-							note,
-							tags,
-					  })
-					: await appendMemoryNote({
-							workspaceRoot: canonicalWorkspaceRoot,
-							note,
-							tags,
-					  });
-			return {
-				isError: false,
-				text: `[memory_append] wrote ${result.charsAppended} chars to ${result.path}`,
-			};
-		}
-
-		if (toolName === "write") {
-			const target = await resolveWorkspacePathForWrite(canonicalWorkspaceRoot, toolArgs.path, {
-				ensureParentDir: true,
-			});
-			const append = Boolean(toolArgs.append);
-			const content = normalizeTextValue(toolArgs.content);
-			if (onboardingMode && isMemoryPath(target.relativePath)) {
+			if (toolName === "write") {
+				const target = await resolveWorkspacePathForWrite(canonicalWorkspaceRoot, toolArgs.path, {
+					ensureParentDir: true,
+				});
+				const append = Boolean(toolArgs.append);
+				const content = normalizeTextValue(toolArgs.content);
+				if (looksSensitiveSecret(content)) {
+					return { isError: true, text: buildSecretWriteBlockedMessage() };
+				}
+				if (append) {
+					await fs.promises.appendFile(target.canonicalPath, content, "utf8");
+				} else {
+					await fs.promises.writeFile(target.canonicalPath, content, "utf8");
+				}
+				if (
+					onboardingMode &&
+					isMemoryPath(target.relativePath) &&
+					typeof onboardingHandlers.onMemoryFileWritten === "function"
+				) {
+					await onboardingHandlers.onMemoryFileWritten({
+						workspaceRoot: canonicalWorkspaceRoot,
+						path: target.relativePath,
+						mode: append ? "append" : "write",
+					});
+				}
 				return {
-					isError: true,
-					text: "Direct memory file writes are blocked during onboarding. Use memory_append instead.",
+					isError: false,
+					text: `[write] ${append ? "appended" : "wrote"} ${content.length} chars to ${target.relativePath}`,
 				};
 			}
-			if (looksSensitiveSecret(content)) {
-				return { isError: true, text: buildSecretWriteBlockedMessage() };
-			}
-			if (append) {
-				await fs.promises.appendFile(target.canonicalPath, content, "utf8");
-			} else {
-				await fs.promises.writeFile(target.canonicalPath, content, "utf8");
-			}
-			return {
-				isError: false,
-				text: `[write] ${append ? "appended" : "wrote"} ${content.length} chars to ${target.relativePath}`,
-			};
-		}
 
 		if (toolName === "edit") {
 			const target = await resolveWorkspacePathForRead(canonicalWorkspaceRoot, toolArgs.path, {
@@ -1232,15 +1274,9 @@ export async function executeToolCall(call, context) {
 					text: "edit requires non-empty oldText.",
 				};
 			}
-			if (onboardingMode && isMemoryPath(target.relativePath)) {
-				return {
-					isError: true,
-					text: "Direct memory file writes are blocked during onboarding. Use memory_append instead.",
-				};
-			}
-			if (looksSensitiveSecret(newText)) {
-				return { isError: true, text: buildSecretWriteBlockedMessage() };
-			}
+				if (looksSensitiveSecret(newText)) {
+					return { isError: true, text: buildSecretWriteBlockedMessage() };
+				}
 			const original = await fs.promises.readFile(target.canonicalPath, "utf8");
 			let replacementCount = 0;
 			let next = original;
@@ -1259,12 +1295,23 @@ export async function executeToolCall(call, context) {
 					isError: true,
 					text: `edit could not find target text in ${target.relativePath}.`,
 				};
-			}
-			await fs.promises.writeFile(target.canonicalPath, next, "utf8");
-			return {
-				isError: false,
-				text: `[edit] ${target.relativePath} replacements=${replacementCount}`,
-			};
+				}
+				await fs.promises.writeFile(target.canonicalPath, next, "utf8");
+				if (
+					onboardingMode &&
+					isMemoryPath(target.relativePath) &&
+					typeof onboardingHandlers.onMemoryFileWritten === "function"
+				) {
+					await onboardingHandlers.onMemoryFileWritten({
+						workspaceRoot: canonicalWorkspaceRoot,
+						path: target.relativePath,
+						mode: "edit",
+					});
+				}
+				return {
+					isError: false,
+					text: `[edit] ${target.relativePath} replacements=${replacementCount}`,
+				};
 		}
 
 		if (toolName === "ls") {

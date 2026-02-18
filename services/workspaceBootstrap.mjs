@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveRuntimePaths } from "./runtimePaths.mjs";
 
 const BASE_FILES = Object.freeze([
 	{
@@ -18,6 +19,42 @@ const BASE_FILES = Object.freeze([
 			"# Soul",
 			"",
 			"Describe preferred collaboration style, tone, and high-level operating principles.",
+			"",
+		].join("\n"),
+	},
+	{
+		relativePath: "USER.md",
+		content: [
+			"# User",
+			"",
+			"Capture stable user profile notes, preferences, and recurring constraints.",
+			"",
+		].join("\n"),
+	},
+	{
+		relativePath: "TOOLS.md",
+		content: [
+			"# Tools",
+			"",
+			"Document local environment setup notes, installed CLIs, and tool quirks.",
+			"",
+		].join("\n"),
+	},
+	{
+		relativePath: "IDENTITY.md",
+		content: [
+			"# Identity",
+			"",
+			"Record agent identity, role boundaries, and operating commitments.",
+			"",
+		].join("\n"),
+	},
+	{
+		relativePath: "HEARTBEAT.md",
+		content: [
+			"# Heartbeat",
+			"",
+			"Maintain startup and periodic operational checklist items.",
 			"",
 		].join("\n"),
 	},
@@ -55,8 +92,9 @@ async function ensureFileOnce(targetPath, content) {
 	}
 }
 
-export async function resolveDefaultWorkspaceRoot() {
-	return path.resolve(process.cwd(), "workspace");
+export async function resolveDefaultWorkspaceRoot(options = {}) {
+	const runtimePaths = resolveRuntimePaths(options);
+	return runtimePaths.defaultWorkspaceRoot;
 }
 
 export async function ensureWorkspaceScaffold(workspaceRoot, options = {}) {

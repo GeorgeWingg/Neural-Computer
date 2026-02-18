@@ -4,6 +4,8 @@
  */
 /* tslint:disable */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getLatestReasoningPreview } from '../services/loadingPlaceholderPolicy';
+import { shouldUseScriptStrippedPreview } from '../services/streamingUiPolicy';
 import { ColorTheme, GenerationTimelineFrame, InteractionData, LoadingUiMode } from '../types';
 
 interface LoadingTheme {
@@ -272,12 +274,12 @@ function buildBridgeScript(uiSessionId: string, bridgeToken: string): string {
     var sessionId = ${JSON.stringify(uiSessionId)};
     var token = ${JSON.stringify(bridgeToken)};
 	    function post(payload) {
-	      window.parent.postMessage({
-	        type: 'neural-computer-interaction',
-	        uiSessionId: sessionId,
-	        bridgeToken: token,
-	        payload: payload
-	      }, '*');
+		      window.parent.postMessage({
+		        type: 'neural-os-interaction',
+		        uiSessionId: sessionId,
+		        bridgeToken: token,
+		        payload: payload
+		      }, '*');
     }
     try {
       post({ type: 'bridge_ready' });
@@ -338,19 +340,20 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   appName,
   appIcon,
   colorTheme: rawColorTheme = 'dark',
-  loadingUiMode: rawLoadingUiMode = 'code',
+  loadingUiMode: rawLoadingUiMode = 'immersive',
   traceId,
   uiSessionId = 'session_unknown',
 }) => {
   const [displayProgress, setDisplayProgress] = useState(0);
-  const [showIframe, setShowIframe] = useState(false);
   const [timelineScrubIndex, setTimelineScrubIndex] = useState(0);
   const [timelinePinnedToLive, setTimelinePinnedToLive] = useState(true);
   const [bridgeToken, setBridgeToken] = useState(() => `bridge_${Math.random().toString(36).slice(2)}`);
   const ambientRef = useRef(0);
   const scrollAnchorRef = useRef<HTMLDivElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const streamingIframeRef = useRef<HTMLIFrameElement>(null);
+  const immersiveIframeRef = useRef<HTMLIFrameElement>(null);
+  const lastImmersiveMarkupRef = useRef('');
+  const lastExecutedMarkupRef = useRef('');
+  const previousHtmlContentRef = useRef(htmlContent);
   const eventSeqRef = useRef(0);
   const prevDisplayProgressRef = useRef(0);
 
@@ -363,6 +366,7 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   const selectedTimelineFrame = timelineFrameCount ? generationTimelineFrames[safeTimelineIndex] : null;
   const replayActive = Boolean(selectedTimelineFrame) && safeTimelineIndex < timelineMaxIndex;
   const activeHtmlContent = replayActive && selectedTimelineFrame ? selectedTimelineFrame.htmlSnapshot : htmlContent;
+  const htmlChangedThisRender = htmlContent !== previousHtmlContentRef.current;
   const rawProgress = estimateProgress(htmlContent, isLoading);
   const liveProgressBarFillPercent = !isLoading && timelineFrameCount > 0 ? 100 : displayProgress;
   const timelineDotPercent = timelineFrameCount > 1
@@ -378,7 +382,6 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
         ? `calc(100% - ${timelineDotInsetPx}px)`
         : `${timelineDotPercent}%`
     : `${liveProgressBarFillPercent}%`;
-  const showCompletedIframe = showIframe && !isLoading && Boolean(htmlContent) && !replayActive;
   const [isTimelineDragging, setIsTimelineDragging] = useState(false);
 
   useEffect(() => {
@@ -397,25 +400,22 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   // Reset state when appContext changes (new app opened)
   useEffect(() => {
     setDisplayProgress(0);
-    setShowIframe(false);
     setTimelineScrubIndex(0);
     setTimelinePinnedToLive(true);
     ambientRef.current = 0;
+    lastImmersiveMarkupRef.current = '';
+    lastExecutedMarkupRef.current = '';
     eventSeqRef.current = 0;
     setBridgeToken(`bridge_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`);
   }, [appContext]);
 
-  // Handle completion: crossfade to iframe
+  // Ensure progress snaps to full once loading ends and content exists.
   useEffect(() => {
-    if (!isLoading && htmlContent) {
+    if (htmlContent && !isLoading) {
       setDisplayProgress(100);
-      const timer = setTimeout(() => setShowIframe(true), 300);
-      return () => clearTimeout(timer);
+      return;
     }
-    if (!htmlContent) {
-      setShowIframe(false);
-      setDisplayProgress(0);
-    }
+    if (!htmlContent) setDisplayProgress(0);
   }, [isLoading, htmlContent]);
 
   // Ambient progress nudge — 0.5% every 500ms, cap 3% above last marker
@@ -442,6 +442,10 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   }, [displayProgress]);
 
   useEffect(() => {
+    previousHtmlContentRef.current = htmlContent;
+  }, [htmlContent]);
+
+  useEffect(() => {
     if (!isTimelineDragging) return;
     const endDrag = () => setIsTimelineDragging(false);
     window.addEventListener('mouseup', endDrag);
@@ -460,10 +464,16 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
   }, [htmlContent, isLoading]);
 
   // postMessage listener for iframe interactions
-	  useEffect(() => {
-	    const handler = (event: MessageEvent) => {
-	      if (event.data?.type !== 'neural-computer-interaction' && event.data?.type !== 'gemini-os-interaction') return;
-	      if (event.source !== iframeRef.current?.contentWindow) return;
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      if (
+        event.data?.type !== 'neural-os-interaction' &&
+        event.data?.type !== 'neural-computer-interaction' &&
+        event.data?.type !== 'gemini-os-interaction'
+      ) {
+        return;
+      }
+      if (event.source !== immersiveIframeRef.current?.contentWindow) return;
       if (event.data?.uiSessionId !== uiSessionId) return;
       if (event.data?.bridgeToken !== bridgeToken) return;
 
@@ -493,7 +503,7 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
     () => parseStreamedContent(activeHtmlContent),
     [activeHtmlContent],
   );
-  const previewMarkup = useMemo(() => {
+  const immersiveMarkup = useMemo(() => {
     if (!contentWithoutThoughts.trim()) return '';
     if (!/<[a-zA-Z]/.test(contentWithoutThoughts)) {
       return `
@@ -509,10 +519,19 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
         ">${escapeHtml(contentWithoutThoughts.trim())}</div>
       `;
     }
-    return stripScriptsForPreview(contentWithoutThoughts);
-  }, [contentWithoutThoughts]);
+    if (
+      shouldUseScriptStrippedPreview({
+        isLoading,
+        replayActive,
+        htmlChangedThisRender,
+      })
+    ) {
+      return stripScriptsForPreview(contentWithoutThoughts);
+    }
+    return contentWithoutThoughts;
+  }, [contentWithoutThoughts, htmlChangedThisRender, isLoading, replayActive]);
 
-  const streamingPreviewDoc = useMemo(() => {
+  const immersiveFrameDoc = useMemo(() => {
     const iframeTheme = getIframeBaseTheme(effectiveColorTheme);
     return `<!DOCTYPE html>
 <html><head>
@@ -528,25 +547,47 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
     background: ${iframeTheme.bg};
     color: ${iframeTheme.text};
   }
-  #gemini-streaming-root { width: 100%; min-height: 100%; }
+  #gemini-immersive-root { width: 100%; min-height: 100%; }
 </style>
+<script>${buildBridgeScript(uiSessionId, bridgeToken)}<\/script>
 </head>
-<body><div id="gemini-streaming-root"></div></body></html>`;
-  }, [effectiveColorTheme]);
+<body><div id="gemini-immersive-root"></div></body></html>`;
+  }, [effectiveColorTheme, uiSessionId, bridgeToken]);
 
-  const syncStreamingPreview = useCallback(() => {
-    const iframe = streamingIframeRef.current;
+  const syncImmersiveFrame = useCallback(() => {
+    const iframe = immersiveIframeRef.current;
     if (!iframe) return;
-    const root = iframe.contentDocument?.getElementById('gemini-streaming-root');
+    const root = iframe.contentDocument?.getElementById('gemini-immersive-root');
     if (!root) return;
-    root.innerHTML = previewMarkup;
-  }, [previewMarkup]);
+    if (lastImmersiveMarkupRef.current !== immersiveMarkup) {
+      root.innerHTML = immersiveMarkup;
+      lastImmersiveMarkupRef.current = immersiveMarkup;
+    }
+    if (isLoading || replayActive) return;
+    if (lastExecutedMarkupRef.current === immersiveMarkup) return;
+    const doc = iframe.contentDocument;
+    if (!doc) return;
+    const scripts = Array.from(root.querySelectorAll('script')) as HTMLScriptElement[];
+    for (const oldScript of scripts) {
+      const nextScript = doc.createElement('script');
+      for (const attribute of Array.from(oldScript.attributes) as Attr[]) {
+        nextScript.setAttribute(attribute.name, attribute.value);
+      }
+      if (oldScript.src) {
+        nextScript.src = oldScript.src;
+      } else {
+        nextScript.textContent = oldScript.textContent || '';
+      }
+      oldScript.replaceWith(nextScript);
+    }
+    lastExecutedMarkupRef.current = immersiveMarkup;
+  }, [immersiveMarkup, isLoading, replayActive]);
 
   useEffect(() => {
     if (loadingUiMode === 'code') return;
-    if (!activeHtmlContent || showCompletedIframe) return;
-    syncStreamingPreview();
-  }, [activeHtmlContent, showCompletedIframe, syncStreamingPreview, loadingUiMode]);
+    if (!activeHtmlContent) return;
+    syncImmersiveFrame();
+  }, [activeHtmlContent, syncImmersiveFrame, loadingUiMode]);
 
   const handleTimelineScrub = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -560,83 +601,10 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
     [showTimelineScrubber, timelineMaxIndex],
   );
 
-  // Build iframe srcDoc — bridge script injected BEFORE content in <head>
-  const iframeDoc = useMemo(() => {
-    if (!htmlContent || isLoading) return '';
-    const iframeTheme = getIframeBaseTheme(effectiveColorTheme);
-    // Check if the content has any HTML tags
-    const hasHtml = /<[a-zA-Z]/.test(contentWithoutThoughts);
-
-    // If no HTML, wrap the text in a styled message (AI rejection or plain text response)
-    const bodyContent = hasHtml ? contentWithoutThoughts : `
-      <div style="
-        padding: 20px;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        line-height: 1.6;
-        color: #374151;
-        background: #f9fafb;
-        border-radius: 8px;
-        border: 1px solid #e5e7eb;
-        white-space: pre-wrap;
-      ">
-        <div style="margin-bottom: 12px; font-weight: 600; color: #6b7280; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
-          AI Response
-        </div>
-        ${contentWithoutThoughts.trim().replace(/</g, '&lt;').replace(/>/g, '&gt;')}
-      </div>
-    `;
-
-    return `<!DOCTYPE html>
-<html><head>
-<meta charset="utf-8">
-<meta name="referrer" content="no-referrer">
-<style>
-  :root {
-    --gemini-base-bg: ${iframeTheme.bg};
-    --gemini-base-text: ${iframeTheme.text};
-    --gemini-control-surface: ${iframeTheme.controlSurface};
-    --gemini-control-border: ${iframeTheme.controlBorder};
-    --gemini-control-placeholder: ${iframeTheme.placeholder};
-    --gemini-control-hover: ${iframeTheme.buttonHover};
-    color-scheme: ${effectiveColorTheme === 'dark' ? 'dark' : 'light'};
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 100%; height: 100%; min-height: 100%; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    overflow-y: auto;
-    background: var(--gemini-base-bg);
-    color: var(--gemini-base-text);
-  }
-  #gemini-generated-root { width: 100%; min-height: 100%; }
-  button, input, textarea, select {
-    font: inherit;
-    color: inherit;
-    border-radius: 10px;
-    border: 1px solid var(--gemini-control-border);
-    background: var(--gemini-control-surface);
-  }
-  button {
-    cursor: pointer;
-    transition: background-color 120ms ease-in-out, border-color 120ms ease-in-out;
-  }
-  button:hover {
-    background: var(--gemini-control-hover);
-    border-color: color-mix(in srgb, var(--gemini-control-border) 55%, white 45%);
-  }
-  input, textarea, select {
-    padding: 6px 10px;
-  }
-  input::placeholder, textarea::placeholder {
-    color: var(--gemini-control-placeholder);
-  }
-</style>
-<script>${buildBridgeScript(uiSessionId, bridgeToken)}<\/script>
-</head>
-<body>
-<div id="gemini-generated-root">${bodyContent}</div>
-</body></html>`;
-  }, [htmlContent, isLoading, uiSessionId, bridgeToken, effectiveColorTheme, contentWithoutThoughts]);
+  const latestReasoningPreview = useMemo(
+    () => getLatestReasoningPreview(generationTimelineFrames, 320),
+    [generationTimelineFrames],
+  );
 
   // No content and not loading
   if (!isLoading && !htmlContent && timelineFrameCount === 0) {
@@ -743,24 +711,7 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
           lineHeight: '1.6',
         }}
       >
-        {showCompletedIframe ? (
-          <div
-            style={{
-              width: '100%',
-              height: '100%',
-              animation: 'fadeIn 0.3s ease-in',
-            }}
-          >
-            <iframe
-              ref={iframeRef}
-              srcDoc={iframeDoc}
-              style={{ width: '100%', height: '100%', border: 'none' }}
-              sandbox="allow-scripts allow-forms"
-              title={appName || 'App Content'}
-              referrerPolicy="no-referrer"
-            />
-          </div>
-        ) : !activeHtmlContent ? (
+        {!activeHtmlContent ? (
           /* Phase 1: Initial loading - centered icon + skeleton */
           <div
             style={{
@@ -772,7 +723,17 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
               gap: '16px',
             }}
           >
-            <div style={{ fontSize: '48px' }}>{appIcon || '...'}</div>
+            <img
+              src="/logo-mark.svg"
+              alt="Neural OS"
+              style={{
+                width: '78px',
+                height: '78px',
+                objectFit: 'contain',
+                opacity: 0.94,
+                filter: effectiveColorTheme === 'dark' ? 'drop-shadow(0 6px 20px rgba(15,23,42,0.45))' : 'none',
+              }}
+            />
             <div
               style={{
                 color: theme.textMuted,
@@ -783,30 +744,61 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
             >
               {timelineFrameCount > 0 && !isLoading ? 'Start of generation' : 'Connecting...'}
             </div>
-            <div
-              style={{
-                width: '60%',
-                maxWidth: '300px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px',
-                marginTop: '20px',
-              }}
-            >
-              {[80, 100, 60, 90].map((w, i) => (
-                <div
-                  key={i}
-                  style={{
-                    width: `${w}%`,
-                    height: '12px',
-                    borderRadius: '6px',
-                    background: theme.skeletonBase,
-                    backgroundSize: '200% 100%',
-                    animation: 'shimmer 1.5s infinite',
-                  }}
-                />
-              ))}
-            </div>
+            {latestReasoningPreview ? (
+              <div
+                style={{
+                  width: '68%',
+                  maxWidth: '520px',
+                  minHeight: '96px',
+                  marginTop: '18px',
+                  borderRadius: '12px',
+                  border: `1px solid ${theme.statusBorder}`,
+                  background:
+                    effectiveColorTheme === 'light' || effectiveColorTheme === 'system'
+                      ? 'rgba(255,255,255,0.62)'
+                      : 'rgba(15,23,42,0.34)',
+                  color: theme.statusText,
+                  fontFamily:
+                    "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace",
+                  fontSize: '12px',
+                  lineHeight: 1.55,
+                  padding: '12px 14px',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  overflow: 'hidden',
+                }}
+              >
+                {latestReasoningPreview}
+                {isLoading && (
+                  <span style={{ animation: 'blink 1s infinite', marginLeft: 2, color: '#3b82f6' }}>&#9610;</span>
+                )}
+              </div>
+            ) : (
+              <div
+                style={{
+                  width: '60%',
+                  maxWidth: '300px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  marginTop: '20px',
+                }}
+              >
+                {[80, 100, 60, 90].map((w, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      width: `${w}%`,
+                      height: '12px',
+                      borderRadius: '6px',
+                      background: theme.skeletonBase,
+                      backgroundSize: '200% 100%',
+                      animation: 'shimmer 1.5s infinite',
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           /* Phase 2: Streaming content */
@@ -880,12 +872,17 @@ export const GeneratedContent: React.FC<GeneratedContentProps> = ({
                   }}
                 >
                   <iframe
-                    ref={streamingIframeRef}
-                    srcDoc={streamingPreviewDoc}
-                    onLoad={syncStreamingPreview}
-                    style={{ width: '100%', height: '100%', border: 'none', pointerEvents: 'none' }}
-                    sandbox="allow-forms allow-same-origin"
-                    title={`${appName || 'App Content'} Streaming Preview`}
+                    ref={immersiveIframeRef}
+                    srcDoc={immersiveFrameDoc}
+                    onLoad={syncImmersiveFrame}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      border: 'none',
+                      pointerEvents: replayActive ? 'none' : 'auto',
+                    }}
+                    sandbox="allow-scripts allow-forms allow-same-origin"
+                    title={appName || 'App Content'}
                     referrerPolicy="no-referrer"
                   />
                 </div>

@@ -36,6 +36,7 @@ interface WindowProps {
   onFeedbackScoreSelect: (score: number) => void;
   onFeedbackCommentChange: (comment: string) => void;
   onFeedbackSubmit: () => void;
+  showDebugUi?: boolean;
 }
 
 type MenuName = 'feedback' | 'settings' | 'debug' | null;
@@ -249,6 +250,17 @@ function isTauriRuntime(): boolean {
   return '__TAURI_INTERNALS__' in window;
 }
 
+function getTauriTitleInsets(): { left: string; top: string } {
+  if (!isTauriRuntime()) {
+    return { left: '0px', top: '0px' };
+  }
+  // Keep text clear of macOS traffic lights and account for fullscreen/notch safe area.
+  return {
+    left: 'calc(72px + env(safe-area-inset-left, 0px))',
+    top: 'env(safe-area-inset-top, 0px)',
+  };
+}
+
 export const Window: React.FC<WindowProps> = ({
   title,
   children,
@@ -272,6 +284,7 @@ export const Window: React.FC<WindowProps> = ({
   onFeedbackScoreSelect,
   onFeedbackCommentChange,
   onFeedbackSubmit,
+  showDebugUi = true,
 }) => {
   const [openMenu, setOpenMenu] = useState<MenuName>(null);
   const [searchValue, setSearchValue] = useState('');
@@ -280,7 +293,7 @@ export const Window: React.FC<WindowProps> = ({
   const [contextStackExpanded, setContextStackExpanded] = useState(true);
   const [timelineExpanded, setTimelineExpanded] = useState(true);
   const menuBarRef = useRef<HTMLDivElement>(null);
-  const titleInset = isTauriRuntime() ? 64 : 0;
+  const titleInsets = getTauriTitleInsets();
   const hasDebugData = debugRecords.length > 0;
   const selectedDebugRecord = hasDebugData
     ? debugRecords[Math.max(0, Math.min(debugRecordOffset, debugRecords.length - 1))]
@@ -352,13 +365,16 @@ export const Window: React.FC<WindowProps> = ({
     <div className="w-full h-full bg-white/95 border border-gray-300 flex flex-col relative overflow-hidden font-sans">
       {/* Title Bar */}
       <div
-        data-tauri-drag-region
-        className="bg-gray-800/95 text-white py-2 px-4 font-semibold text-sm flex items-center select-none cursor-default flex-shrink-0 border-b border-gray-700"
+        className="bg-gray-800/95 text-white px-4 font-semibold text-sm flex items-center select-none cursor-default flex-shrink-0 border-b border-gray-700"
+        style={{
+          minHeight: `calc(40px + ${titleInsets.top})`,
+          paddingTop: titleInsets.top,
+        }}
       >
         <div
           data-tauri-drag-region
           className="flex items-center gap-2 w-[320px] max-w-[65vw] flex-none overflow-hidden"
-          style={{ paddingLeft: `${titleInset}px` }}
+          style={{ paddingLeft: titleInsets.left }}
         >
           <span data-tauri-drag-region className="tracking-wide uppercase text-xs truncate">
             {title}
@@ -503,200 +519,201 @@ export const Window: React.FC<WindowProps> = ({
           )}
         </div>
 
-        {/* Debug Menu */}
-        <div style={{ position: 'relative', marginLeft: '4px' }}>
-          <span
-            className="cursor-pointer hover:text-gray-900 px-2 py-1 rounded transition-colors"
-            style={openMenu === 'debug' ? { backgroundColor: '#e5e7eb', color: '#111827' } : {}}
-            onClick={() => toggleMenu('debug')}
-            role="button"
-            tabIndex={0}>
-            Debug ▾
-          </span>
-          {openMenu === 'debug' && (
-            <div style={{ ...dropdownStyle, minWidth: '540px', maxWidth: 'min(92vw, 680px)', backgroundColor: '#0b1220', borderColor: '#1f2937', color: '#e2e8f0' }}>
-              <div style={{ ...headerStyle, color: '#93c5fd' }}>Instrumentation</div>
-              {!hasDebugData ? (
-                <div className="px-4 py-4 text-xs text-slate-400">
-                  No captured turns yet. Generate a screen to populate the context stack.
-                </div>
-              ) : (
-                <div className="px-3 pb-3 space-y-2 text-xs">
-                  <div className="rounded border border-slate-700 bg-slate-900/70 p-2">
-                    <button
-                      className="w-full flex items-center justify-between gap-2 text-left"
-                      onClick={() => setContextStackExpanded((previous) => !previous)}
-                    >
-                      <div className="font-semibold text-slate-100">Model Context Stack</div>
-                      <div className="text-[11px] text-slate-300 whitespace-nowrap">
-                        {formatTokens(debugLayerTotalTokens)} tk total {contextStackExpanded ? '▴' : '▾'}
-                      </div>
-                    </button>
-                    {contextStackExpanded && (
-                      <>
-                        <div className="mt-2 h-8 rounded border border-slate-700 overflow-hidden flex">
-                          {debugLayers.map((layer) => {
-                            const pct = debugLayerTotalTokens > 0 ? (layer.tokens / debugLayerTotalTokens) * 100 : 0;
-                            return (
-                              <div
-                                key={`stack_${layer.id}`}
-                                className="h-full flex items-center justify-center text-[10px] font-semibold text-slate-900 border-r border-white/20 last:border-r-0"
-                                style={{
-                                  backgroundColor: layer.color,
-                                  width: `${Math.max(12, pct)}%`,
-                                }}
-                                title={`${layer.title}: ${formatTokens(layer.tokens)} tk`}
-                              >
-                                {layer.label}
-                              </div>
-                            );
-                          })}
+        {showDebugUi && (
+          <div style={{ position: 'relative', marginLeft: '4px' }}>
+            <span
+              className="cursor-pointer hover:text-gray-900 px-2 py-1 rounded transition-colors"
+              style={openMenu === 'debug' ? { backgroundColor: '#e5e7eb', color: '#111827' } : {}}
+              onClick={() => toggleMenu('debug')}
+              role="button"
+              tabIndex={0}>
+              Debug ▾
+            </span>
+            {openMenu === 'debug' && (
+              <div style={{ ...dropdownStyle, minWidth: '540px', maxWidth: 'min(92vw, 680px)', backgroundColor: '#0b1220', borderColor: '#1f2937', color: '#e2e8f0' }}>
+                <div style={{ ...headerStyle, color: '#93c5fd' }}>Instrumentation</div>
+                {!hasDebugData ? (
+                  <div className="px-4 py-4 text-xs text-slate-400">
+                    No captured turns yet. Generate a screen to populate the context stack.
+                  </div>
+                ) : (
+                  <div className="px-3 pb-3 space-y-2 text-xs">
+                    <div className="rounded border border-slate-700 bg-slate-900/70 p-2">
+                      <button
+                        className="w-full flex items-center justify-between gap-2 text-left"
+                        onClick={() => setContextStackExpanded((previous) => !previous)}
+                      >
+                        <div className="font-semibold text-slate-100">Model Context Stack</div>
+                        <div className="text-[11px] text-slate-300 whitespace-nowrap">
+                          {formatTokens(debugLayerTotalTokens)} tk total {contextStackExpanded ? '▴' : '▾'}
                         </div>
-                        <div className="mt-2 grid grid-cols-1 gap-1.5">
-                          {debugLayers.map((layer) => {
-                            const pct = debugLayerTotalTokens > 0 ? (layer.tokens / debugLayerTotalTokens) * 100 : 0;
-                            const expanded = expandedLayerIds.includes(layer.id);
-                            return (
-                              <div key={layer.id} className="rounded border border-slate-700 bg-slate-950/70 px-2 py-1.5">
-                                <button
-                                  className="w-full flex items-center justify-between gap-2 text-left"
-                                  onClick={() => toggleLayerExpanded(layer.id)}
+                      </button>
+                      {contextStackExpanded && (
+                        <>
+                          <div className="mt-2 h-8 rounded border border-slate-700 overflow-hidden flex">
+                            {debugLayers.map((layer) => {
+                              const pct = debugLayerTotalTokens > 0 ? (layer.tokens / debugLayerTotalTokens) * 100 : 0;
+                              return (
+                                <div
+                                  key={`stack_${layer.id}`}
+                                  className="h-full flex items-center justify-center text-[10px] font-semibold text-slate-900 border-r border-white/20 last:border-r-0"
+                                  style={{
+                                    backgroundColor: layer.color,
+                                    width: `${Math.max(12, pct)}%`,
+                                  }}
+                                  title={`${layer.title}: ${formatTokens(layer.tokens)} tk`}
                                 >
-                                  <span className="text-[11px] font-semibold text-slate-100">{layer.title}</span>
-                                  <span className="text-[10px] text-slate-300 whitespace-nowrap">
-                                    {formatTokens(layer.tokens)} tk ({pct.toFixed(1)}%) {expanded ? '▴' : '▾'}
-                                  </span>
-                                </button>
-                                {expanded ? (
-                                  <pre className="text-[10px] leading-4 text-slate-300 mt-1 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
-                                    {layer.fullText}
-                                  </pre>
-                                ) : (
-                                  <div className="text-[10px] text-slate-400 mt-0.5">{layer.preview}</div>
-                                )}
+                                  {layer.label}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-2 grid grid-cols-1 gap-1.5">
+                            {debugLayers.map((layer) => {
+                              const pct = debugLayerTotalTokens > 0 ? (layer.tokens / debugLayerTotalTokens) * 100 : 0;
+                              const expanded = expandedLayerIds.includes(layer.id);
+                              return (
+                                <div key={layer.id} className="rounded border border-slate-700 bg-slate-950/70 px-2 py-1.5">
+                                  <button
+                                    className="w-full flex items-center justify-between gap-2 text-left"
+                                    onClick={() => toggleLayerExpanded(layer.id)}
+                                  >
+                                    <span className="text-[11px] font-semibold text-slate-100">{layer.title}</span>
+                                    <span className="text-[10px] text-slate-300 whitespace-nowrap">
+                                      {formatTokens(layer.tokens)} tk ({pct.toFixed(1)}%) {expanded ? '▴' : '▾'}
+                                    </span>
+                                  </button>
+                                  {expanded ? (
+                                    <pre className="text-[10px] leading-4 text-slate-300 mt-1 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+                                      {layer.fullText}
+                                    </pre>
+                                  ) : (
+                                    <div className="text-[10px] text-slate-400 mt-0.5">{layer.preview}</div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="rounded border border-slate-700 bg-slate-900/70 p-2">
+                      <button
+                        className="w-full flex items-center justify-between gap-2 text-left"
+                        onClick={() => setTimelineExpanded((previous) => !previous)}
+                      >
+                        <div className="font-semibold text-slate-100">Generation Chronology</div>
+                        <div className="text-[11px] text-slate-300 whitespace-nowrap">
+                          {generationTimelineFrames.length} events {timelineExpanded ? '▴' : '▾'}
+                        </div>
+                      </button>
+                      {timelineExpanded && (
+                        <>
+                          {generationTimelineFrames.length === 0 ? (
+                            <div className="mt-2 text-[11px] text-slate-400">
+                              No timeline events captured yet for this generation.
+                            </div>
+                          ) : (
+                            <div className="mt-2">
+                              <div className="text-[10px] text-slate-400 mb-1">
+                                earliest → latest
                               </div>
-                            );
-                          })}
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  <div className="rounded border border-slate-700 bg-slate-900/70 p-2">
-                    <button
-                      className="w-full flex items-center justify-between gap-2 text-left"
-                      onClick={() => setTimelineExpanded((previous) => !previous)}
-                    >
-                      <div className="font-semibold text-slate-100">Generation Chronology</div>
-                      <div className="text-[11px] text-slate-300 whitespace-nowrap">
-                        {generationTimelineFrames.length} events {timelineExpanded ? '▴' : '▾'}
-                      </div>
-                    </button>
-                    {timelineExpanded && (
-                      <>
-                        {generationTimelineFrames.length === 0 ? (
-                          <div className="mt-2 text-[11px] text-slate-400">
-                            No timeline events captured yet for this generation.
-                          </div>
-                        ) : (
-                          <div className="mt-2">
-                            <div className="text-[10px] text-slate-400 mb-1">
-                              earliest → latest
-                            </div>
-                            <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
-                              {generationTimelineFrames.map((frame, index) => {
-                                const style = TIMELINE_EVENT_STYLES[frame.type] || TIMELINE_EVENT_STYLES.stream;
-                                return (
-                                  <div key={frame.id} className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1.5">
-                                    <div className="flex items-start justify-between gap-2">
-                                      <div className="min-w-0">
-                                        <div className="flex items-center gap-1.5 min-w-0">
-                                          <span
-                                            className="inline-flex h-4 min-w-[18px] items-center justify-center rounded px-1 text-[9px] font-semibold"
-                                            style={{ backgroundColor: style.pillBg, color: style.pillText }}
-                                          >
-                                            {index + 1}
-                                          </span>
-                                          <span className="text-[11px] font-semibold truncate" style={{ color: style.titleText }}>
-                                            {frame.label}
-                                          </span>
+                              <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+                                {generationTimelineFrames.map((frame, index) => {
+                                  const style = TIMELINE_EVENT_STYLES[frame.type] || TIMELINE_EVENT_STYLES.stream;
+                                  return (
+                                    <div key={frame.id} className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1.5">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="min-w-0">
+                                          <div className="flex items-center gap-1.5 min-w-0">
+                                            <span
+                                              className="inline-flex h-4 min-w-[18px] items-center justify-center rounded px-1 text-[9px] font-semibold"
+                                              style={{ backgroundColor: style.pillBg, color: style.pillText }}
+                                            >
+                                              {index + 1}
+                                            </span>
+                                            <span className="text-[11px] font-semibold truncate" style={{ color: style.titleText }}>
+                                              {frame.label}
+                                            </span>
+                                          </div>
+                                          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-slate-400">
+                                            <span className="uppercase tracking-wide">{formatTimelineType(frame.type)}</span>
+                                            {frame.toolName && <span>• {frame.toolName}</span>}
+                                            {frame.toolCallId && <span>• {frame.toolCallId}</span>}
+                                          </div>
                                         </div>
-                                        <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-slate-400">
-                                          <span className="uppercase tracking-wide">{formatTimelineType(frame.type)}</span>
-                                          {frame.toolName && <span>• {frame.toolName}</span>}
-                                          {frame.toolCallId && <span>• {frame.toolCallId}</span>}
-                                        </div>
+                                        <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                                          {formatTsPrecise(frame.createdAt)}
+                                        </span>
                                       </div>
-                                      <span className="text-[10px] text-slate-400 whitespace-nowrap">
-                                        {formatTsPrecise(frame.createdAt)}
-                                      </span>
+                                      {frame.detail && (
+                                        <div className="mt-1 text-[10px] text-slate-300 break-words">
+                                          {frame.detail}
+                                        </div>
+                                      )}
                                     </div>
-                                    {frame.detail && (
-                                      <div className="mt-1 text-[10px] text-slate-300 break-words">
-                                        {frame.detail}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
+                                  );
+                                })}
+                              </div>
                             </div>
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
+                          )}
+                        </>
+                      )}
+                    </div>
 
-                  <div className="rounded border border-slate-700 bg-slate-900/70 p-2">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-200 font-semibold">Selected Turn</span>
-                      <span className="text-slate-400">
-                        {debugRecordOffset + 1} / {debugRecords.length}
-                      </span>
-                    </div>
-                    {selectedDebugRecord && (
-                      <div className="mt-1 text-[10px] text-slate-300 space-y-0.5">
-                        <div>{selectedDebugRecord.appContext} • {selectedDebugRecord.llmConfig.providerId}/{selectedDebugRecord.llmConfig.modelId}</div>
-                        <div>{selectedDebugRecord.interaction.type} on {selectedDebugRecord.interaction.elementText || selectedDebugRecord.interaction.id}</div>
-                        <div>{formatTs(selectedDebugRecord.createdAt)} • q={Math.round(selectedDebugRecord.qualityScore * 100)}% • {selectedDebugRecord.qualityGatePass ? 'pass' : 'fail'}</div>
-                        <div>
-                          ctx mode: {selectedDebugRecord.contextMemoryMode}
-                          {contextMemoryDebug
-                            ? ` • lane ${contextMemoryDebug.fillPercent.toFixed(1)}% (${formatTokens(contextMemoryDebug.tokens)}/${formatTokens(contextMemoryDebug.contextWindow)} tk)`
-                            : contextMemoryDebugError
-                            ? ` • lane err ${contextMemoryDebugError}`
-                            : ''}
-                        </div>
+                    <div className="rounded border border-slate-700 bg-slate-900/70 p-2">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-slate-200 font-semibold">Selected Turn</span>
+                        <span className="text-slate-400">
+                          {debugRecordOffset + 1} / {debugRecords.length}
+                        </span>
                       </div>
-                    )}
-                    <div className="mt-2 flex items-center gap-1.5">
-                      <button
-                        className="px-2 py-1 rounded border border-slate-600 text-[10px] text-slate-200 hover:bg-slate-800 disabled:opacity-40"
-                        onClick={() => setDebugRecordOffset((prev) => Math.min(debugRecords.length - 1, prev + 1))}
-                        disabled={debugRecordOffset >= debugRecords.length - 1}
-                      >
-                        Older
-                      </button>
-                      <button
-                        className="px-2 py-1 rounded border border-slate-600 text-[10px] text-slate-200 hover:bg-slate-800 disabled:opacity-40"
-                        onClick={() => setDebugRecordOffset((prev) => Math.max(0, prev - 1))}
-                        disabled={debugRecordOffset <= 0}
-                      >
-                        Newer
-                      </button>
-                      <div className="flex-1" />
-                      <button
-                        className="px-2 py-1 rounded border border-slate-600 text-[10px] text-slate-200 hover:bg-slate-800"
-                        onClick={() => handleSettingsItemClick(onClearDebugRecords)}
-                      >
-                        Clear
-                      </button>
+                      {selectedDebugRecord && (
+                        <div className="mt-1 text-[10px] text-slate-300 space-y-0.5">
+                          <div>{selectedDebugRecord.appContext} • {selectedDebugRecord.llmConfig.providerId}/{selectedDebugRecord.llmConfig.modelId}</div>
+                          <div>{selectedDebugRecord.interaction.type} on {selectedDebugRecord.interaction.elementText || selectedDebugRecord.interaction.id}</div>
+                          <div>{formatTs(selectedDebugRecord.createdAt)} • q={Math.round(selectedDebugRecord.qualityScore * 100)}% • {selectedDebugRecord.qualityGatePass ? 'pass' : 'fail'}</div>
+                          <div>
+                            ctx mode: {selectedDebugRecord.contextMemoryMode}
+                            {contextMemoryDebug
+                              ? ` • lane ${contextMemoryDebug.fillPercent.toFixed(1)}% (${formatTokens(contextMemoryDebug.tokens)}/${formatTokens(contextMemoryDebug.contextWindow)} tk)`
+                              : contextMemoryDebugError
+                              ? ` • lane err ${contextMemoryDebugError}`
+                              : ''}
+                          </div>
+                        </div>
+                      )}
+                      <div className="mt-2 flex items-center gap-1.5">
+                        <button
+                          className="px-2 py-1 rounded border border-slate-600 text-[10px] text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+                          onClick={() => setDebugRecordOffset((prev) => Math.min(debugRecords.length - 1, prev + 1))}
+                          disabled={debugRecordOffset >= debugRecords.length - 1}
+                        >
+                          Older
+                        </button>
+                        <button
+                          className="px-2 py-1 rounded border border-slate-600 text-[10px] text-slate-200 hover:bg-slate-800 disabled:opacity-40"
+                          onClick={() => setDebugRecordOffset((prev) => Math.max(0, prev - 1))}
+                          disabled={debugRecordOffset <= 0}
+                        >
+                          Newer
+                        </button>
+                        <div className="flex-1" />
+                        <button
+                          className="px-2 py-1 rounded border border-slate-600 text-[10px] text-slate-200 hover:bg-slate-800"
+                          onClick={() => handleSettingsItemClick(onClearDebugRecords)}
+                        >
+                          Clear
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Search / Global Prompt */}
         <form onSubmit={handleSearchSubmit} className="ml-4 flex-grow max-w-md relative">

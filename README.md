@@ -1,24 +1,79 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Neural OS
 
-# Run and deploy your AI Studio app
+Neural OS is an AI-native desktop environment built with React + Tauri. The UI
+is rendered by model output, with runtime guardrails, tool mediation, and
+iteration loops for quality.
 
-This contains everything you need to run your app locally.
+## Status
 
-View your app in AI Studio: https://ai.studio/apps/bundled/neural_computer
+Early access quality. Stable enough for controlled usage, still evolving in
+runtime, release automation, and developer ergonomics.
 
-## Run Locally
+## Core Architecture
 
-**Prerequisites:**  Node.js
+- **Desktop shell:** Tauri app (`src-tauri/`)
+- **Frontend:** React/Vite host UI (`App.tsx`, `components/`)
+- **Runtime API:** local Node server (`server.mjs`)
+- **Skills + tools:** runtime-mediated file/tool workflows
+- **Telemetry + improvement loops:** local episodes/generation feedback
 
+See:
+- `ARCHITECTURE.md`
+- `docs/self-improvement-system.md`
+- `docs/release.md`
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Getting Started
 
-## Self-Improvement Architecture
+### Prerequisites
 
-- Detailed investigation and diagrams: [`docs/self-improvement-system.md`](docs/self-improvement-system.md)
+- Node.js 20+
+- Rust stable toolchain
+
+### Install
+
+```bash
+npm ci
+```
+
+### Run web + runtime locally
+
+```bash
+npm run dev
+```
+
+### Run desktop app (Tauri dev)
+
+```bash
+npm run tauri:dev
+```
+
+## Build and Release Commands
+
+- Build web app: `npm run build`
+- Build desktop payload (web + sidecar prep): `npm run build:desktop`
+- Build Tauri app (default config): `npm run tauri:build`
+- Build release artifacts (release config): `npm run tauri:build:release`
+- Generate local updater manifest: `npm run updater:manifest:local`
+- Serve local updater endpoint: `npm run updater:serve:local`
+
+## Release Branch Model
+
+- `main`: product development
+- `release/prep-tauri`: packaging, updater, and release infrastructure
+
+## Open Source and Contribution
+
+Please read:
+
+- `CONTRIBUTING.md`
+- `CODE_OF_CONDUCT.md`
+- `SECURITY.md`
+
+License: Apache-2.0 (`LICENSE`)
+
+## Project Naming Notes
+
+The project is branded as **Neural OS**.
+
+Some internal compatibility keys and legacy identifiers still reference older
+`gemini-os` names to preserve migration behavior for existing local state.

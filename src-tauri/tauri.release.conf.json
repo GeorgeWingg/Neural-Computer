@@ -1,0 +1,16 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build:desktop && npm run release:preflight"
+  },
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "${TAURI_UPDATER_ENDPOINT}"
+      ],
+      "pubkey": "${TAURI_UPDATER_PUBKEY}"
+    }
+  }
+}

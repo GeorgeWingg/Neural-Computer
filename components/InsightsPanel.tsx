@@ -36,9 +36,34 @@ export const InsightsPanel: React.FC = () => {
 
   return (
     <div className="h-full overflow-y-auto bg-[#060b16] text-white p-5">
+      <section className="mb-5 rounded-xl border border-amber-500/55 bg-[#1a1206] overflow-hidden shadow-[0_12px_32px_rgba(0,0,0,0.38)]">
+        <div
+          style={{
+            height: '12px',
+            background:
+              'repeating-linear-gradient(-45deg, #f59e0b 0 16px, #111827 16px 32px, #ef4444 32px 48px, #111827 48px 64px)',
+          }}
+        />
+        <div className="px-4 py-3">
+          <div className="text-[11px] uppercase tracking-[0.16em] font-semibold text-amber-300">
+            Under Construction
+          </div>
+          <p className="mt-1 text-sm leading-snug text-amber-100">
+            Insights is mostly under construction in this beta. This page is a fallback view; the long-term Insights experience will be model generated.
+          </p>
+        </div>
+        <div
+          style={{
+            height: '10px',
+            background:
+              'repeating-linear-gradient(45deg, #f59e0b 0 16px, #111827 16px 32px, #ef4444 32px 48px, #111827 48px 64px)',
+          }}
+        />
+      </section>
+
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h2 className="text-xl font-semibold text-blue-300">Self-Improvement Insights</h2>
+          <h2 className="text-xl font-semibold text-blue-300">Insights (Beta Fallback)</h2>
           <p className="text-xs text-blue-100/70">Observe quality trends, skill rollouts, and generation diffs.</p>
         </div>
         <button

@@ -13,19 +13,21 @@ const MIN_ACTIONABLE_SAMPLE = 20;
 const PROMOTION_PASS_STREAK = 2;
 const DEMOTION_FAILURE_STREAK = 2;
 const DISABLE_FAILURE_STREAK = 3;
-const SKILL_TRANSITION_STORAGE_KEY = 'neural-computer-skill-transitions-v1';
-const LEGACY_SKILL_TRANSITION_STORAGE_KEY = 'gemini-os-skill-transitions-v1';
+const SKILL_TRANSITION_STORAGE_KEY = 'neural-os-skill-transitions-v1';
+const LEGACY_SKILL_TRANSITION_STORAGE_KEYS = ['neural-computer-skill-transitions-v1', 'gemini-os-skill-transitions-v1'];
 const MAX_TRANSITIONS = 240;
 
 function readTransitionStorageRaw(): string | null {
   const current = localStorage.getItem(SKILL_TRANSITION_STORAGE_KEY);
   if (current) return current;
-  const legacy = localStorage.getItem(LEGACY_SKILL_TRANSITION_STORAGE_KEY);
-  if (legacy) {
+  for (const legacyKey of LEGACY_SKILL_TRANSITION_STORAGE_KEYS) {
+    const legacy = localStorage.getItem(legacyKey);
+    if (!legacy) continue;
     localStorage.setItem(SKILL_TRANSITION_STORAGE_KEY, legacy);
-    localStorage.removeItem(LEGACY_SKILL_TRANSITION_STORAGE_KEY);
+    LEGACY_SKILL_TRANSITION_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+    return legacy;
   }
-  return legacy;
+  return null;
 }
 
 export interface SkillEvaluationSnapshot {

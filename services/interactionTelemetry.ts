@@ -5,18 +5,20 @@
 /* tslint:disable */
 import { EpisodeRating, EpisodeRecord } from '../types';
 
-const EPISODE_STORAGE_KEY = 'neural-computer-episodes-v1';
-const LEGACY_EPISODE_STORAGE_KEY = 'gemini-os-episodes-v1';
+const EPISODE_STORAGE_KEY = 'neural-os-episodes-v1';
+const LEGACY_EPISODE_STORAGE_KEYS = ['neural-computer-episodes-v1', 'gemini-os-episodes-v1'];
 
 function readEpisodeStorageRaw(): string | null {
   const current = localStorage.getItem(EPISODE_STORAGE_KEY);
   if (current) return current;
-  const legacy = localStorage.getItem(LEGACY_EPISODE_STORAGE_KEY);
-  if (legacy) {
+  for (const legacyKey of LEGACY_EPISODE_STORAGE_KEYS) {
+    const legacy = localStorage.getItem(legacyKey);
+    if (!legacy) continue;
     localStorage.setItem(EPISODE_STORAGE_KEY, legacy);
-    localStorage.removeItem(LEGACY_EPISODE_STORAGE_KEY);
+    LEGACY_EPISODE_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+    return legacy;
   }
-  return legacy;
+  return null;
 }
 
 export function listEpisodes(): EpisodeRecord[] {

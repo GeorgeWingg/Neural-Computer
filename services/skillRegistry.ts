@@ -5,18 +5,20 @@
 /* tslint:disable */
 import { AppSkill, InteractionData } from '../types';
 
-const SKILL_STORAGE_KEY = 'neural-computer-skill-registry-v1';
-const LEGACY_SKILL_STORAGE_KEY = 'gemini-os-skill-registry-v1';
+const SKILL_STORAGE_KEY = 'neural-os-skill-registry-v1';
+const LEGACY_SKILL_STORAGE_KEYS = ['neural-computer-skill-registry-v1', 'gemini-os-skill-registry-v1'];
 
 function readSkillStorageRaw(): string | null {
   const current = localStorage.getItem(SKILL_STORAGE_KEY);
   if (current) return current;
-  const legacy = localStorage.getItem(LEGACY_SKILL_STORAGE_KEY);
-  if (legacy) {
+  for (const legacyKey of LEGACY_SKILL_STORAGE_KEYS) {
+    const legacy = localStorage.getItem(legacyKey);
+    if (!legacy) continue;
     localStorage.setItem(SKILL_STORAGE_KEY, legacy);
-    localStorage.removeItem(LEGACY_SKILL_STORAGE_KEY);
+    LEGACY_SKILL_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+    return legacy;
   }
-  return legacy;
+  return null;
 }
 
 const SKILL_SEEDS: AppSkill[] = [

@@ -26,3 +26,13 @@ dist-ssr
 # Local planning/runtime state
 .agent/
 workspace/
+
+# Release-prep artifacts
+.tmp
+.updater
+src-tauri/sidecar/server.bundle.cjs
+src-tauri/sidecar/server.bundle.mjs
+src-tauri/binaries/neural-os-node-aarch64-apple-darwin
+src-tauri/binaries/neural-os-node-x86_64-apple-darwin
+src-tauri/binaries/neural-computer-node-aarch64-apple-darwin
+src-tauri/binaries/neural-computer-node-x86_64-apple-darwin

@@ -1,6 +1,6 @@
 # Self-Improvement System (As Implemented)
 
-This document maps the **actual code path** for Neural Computer self-improvement, including runtime flow, state transitions, scoring, telemetry, and known gaps.
+This document maps the **actual code path** for Neural OS self-improvement, including runtime flow, state transitions, scoring, telemetry, and known gaps.
 
 ## Scope
 - Investigated source of truth:
@@ -96,17 +96,17 @@ Generation acceptance is not direct RL; it is heuristic and deterministic:
 Those signals feed into episode scoring and therefore into promotion/demotion windows.
 
 ## Persistence Map (localStorage)
-- `neural-computer-skill-registry-v1`
+- `neural-os-skill-registry-v1` (legacy: `neural-computer-skill-registry-v1`)
   - Skill metadata, scores, confidence, status, streaks
-- `neural-computer-skill-transitions-v1`
+- `neural-os-skill-transitions-v1` (legacy: `neural-computer-skill-transitions-v1`)
   - Transition log (capped to 240 latest)
-- `neural-computer-episodes-v1`
+- `neural-os-episodes-v1` (legacy: `neural-computer-episodes-v1`)
   - Episode history (capped to 400 latest)
-- `neural-computer-generations-v1`
+- `neural-os-generations-v1` (legacy: `neural-computer-generations-v1`)
   - Generation records and diffs (capped to 240 latest)
-- `neural-computer-feedback-events-v1`
+- `neural-os-feedback-events-v1` (legacy: `neural-computer-feedback-events-v1`)
   - Explicit feedback events (capped to 500 latest)
-- `neural-computer-session-id`
+- `neural-os-session-id` (legacy: `neural-computer-session-id`)
   - Client session identifier
 
 ## Observability Surface

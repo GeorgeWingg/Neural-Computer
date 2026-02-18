@@ -226,6 +226,22 @@ export const SettingsSkillPanel: React.FC<SettingsSkillPanelProps> = ({
 
   return (
     <div className="h-full overflow-y-auto bg-[#050505] text-white p-5">
+      <section className="mb-4 rounded-xl border border-amber-500/45 bg-[#0f1626] overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
+        <div
+          style={{
+            height: '10px',
+            background:
+              'repeating-linear-gradient(-45deg, #facc15 0 14px, #111827 14px 28px, #ef4444 28px 42px, #111827 42px 56px)',
+          }}
+        />
+        <div className="px-4 py-3">
+          <div className="text-[11px] uppercase tracking-[0.14em] font-semibold text-amber-300">Beta Fallback UI</div>
+          <p className="mt-1 text-sm text-slate-100 leading-snug">
+            This Settings page is a temporary fallback for beta builds. The future Settings experience will be fully model generated.
+          </p>
+        </div>
+      </section>
+
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="text-lg font-semibold">{schema?.title || 'System Settings'}</h2>

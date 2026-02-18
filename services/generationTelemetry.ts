@@ -5,20 +5,22 @@
 /* tslint:disable */
 import { EpisodeRating, GenerationDiffSummary, GenerationMetrics, GenerationRecord } from '../types';
 
-const GENERATION_STORAGE_KEY = 'neural-computer-generations-v1';
-const LEGACY_GENERATION_STORAGE_KEY = 'gemini-os-generations-v1';
+const GENERATION_STORAGE_KEY = 'neural-os-generations-v1';
+const LEGACY_GENERATION_STORAGE_KEYS = ['neural-computer-generations-v1', 'gemini-os-generations-v1'];
 const MAX_GENERATIONS = 240;
 const MAX_SNIPPET_CHARS = 20000;
 
 function readGenerationStorageRaw(): string | null {
   const current = localStorage.getItem(GENERATION_STORAGE_KEY);
   if (current) return current;
-  const legacy = localStorage.getItem(LEGACY_GENERATION_STORAGE_KEY);
-  if (legacy) {
+  for (const legacyKey of LEGACY_GENERATION_STORAGE_KEYS) {
+    const legacy = localStorage.getItem(legacyKey);
+    if (!legacy) continue;
     localStorage.setItem(GENERATION_STORAGE_KEY, legacy);
-    localStorage.removeItem(LEGACY_GENERATION_STORAGE_KEY);
+    LEGACY_GENERATION_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+    return legacy;
   }
-  return legacy;
+  return null;
 }
 
 function readRecords(): GenerationRecord[] {

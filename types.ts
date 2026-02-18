@@ -374,3 +374,30 @@ export interface OnboardingActionResult {
   state: OnboardingState;
   message?: string;
 }
+
+export type UpdaterStatus =
+  | 'disabled'
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'installing'
+  | 'up-to-date'
+  | 'error';
+
+export interface UpdaterState {
+  enabled: boolean;
+  currentVersion: string;
+  latestVersion?: string;
+  status: UpdaterStatus;
+  lastCheckedAt?: number;
+  lastError?: string;
+}
+
+export interface RuntimeBootstrapStatus {
+  available: boolean;
+  status: string;
+  launchMode: string;
+  message?: string;
+  checkedAtMs: number;
+}
